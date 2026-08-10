@@ -7,7 +7,11 @@ from asr.modules.conformer.cache import KVCache
 
 
 class MultiHeadSelfAttention(nn.Module):
-    """Multi-head self-attention with Transformer-XL relative positional encoding."""
+    """Multi-head self-attention with Transformer-XL relative positional encoding.
+
+    Proposed in P. Shaw et al., "Self-attention with relative position representations," in NAACL, 2018, pp. 464-468.
+
+    """
 
     inverse_frequencies: torch.Tensor
 
