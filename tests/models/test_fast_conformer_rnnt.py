@@ -43,6 +43,7 @@ def test_fast_conformer_rnnt_computes_rnnt_and_ctc_losses() -> None:
             dropout_rate=0.0,
         ),
         ctc_loss_weight=0.3,
+        fastemit_lambda=0.004,
     )
     waveforms = torch.randn(2, 256, requires_grad=True)
     waveform_lengths = torch.tensor([256, 200])
@@ -52,6 +53,7 @@ def test_fast_conformer_rnnt_computes_rnnt_and_ctc_losses() -> None:
     metrics = model(waveforms, waveform_lengths, labels, label_lengths, chunk_size=2)
 
     assert metrics.keys() == {"loss", "rnnt_loss", "ctc_loss"}
+    assert model.rnnt_loss_fn.fastemit_lambda == 0.004
     assert all(metric.ndim == 0 and torch.isfinite(metric) for metric in metrics.values())
     torch.testing.assert_close(metrics["loss"], metrics["rnnt_loss"] + 0.3 * metrics["ctc_loss"])
 

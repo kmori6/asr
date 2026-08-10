@@ -56,6 +56,9 @@ model:
     dropout_rate: 0.1
     bias: true
 
+  # FastEmit encourages earlier non-blank emissions. The original LibriSpeech
+  # Conformer experiments use 0.004: https://arxiv.org/abs/2010.11148
+  fastemit_lambda: 0.004
   ctc_loss_weight: 0.3
 
 train:

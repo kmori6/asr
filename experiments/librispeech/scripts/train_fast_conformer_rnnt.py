@@ -158,6 +158,7 @@ def main(config: DictConfig) -> None:
         prediction_network=prediction_network,
         joint_network=joint_network,
         ctc_loss_weight=config.model.ctc_loss_weight,
+        fastemit_lambda=config.model.fastemit_lambda,
     ).to(device)
 
     optimizer = AdamW(

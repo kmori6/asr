@@ -18,6 +18,7 @@ class FastConformerRNNT(nn.Module):
         prediction_network: PredictionNetwork,
         joint_network: JointNetwork,
         ctc_loss_weight: float,
+        fastemit_lambda: float,
     ) -> None:
         super().__init__()
         if encoder.input_size != frontend.n_mels:
@@ -30,6 +31,8 @@ class FastConformerRNNT(nn.Module):
             raise ValueError("joint and prediction network vocabulary sizes must match")
         if ctc_loss_weight < 0.0:
             raise ValueError("ctc_loss_weight must be non-negative")
+        if fastemit_lambda < 0.0:
+            raise ValueError("fastemit_lambda must be non-negative")
 
         self.frontend = frontend
         self.spec_augment = spec_augment
@@ -39,8 +42,13 @@ class FastConformerRNNT(nn.Module):
         self.blank_token_id = prediction_network.blank_token_id
         self.vocab_size = prediction_network.vocab_size
         self.ctc_loss_weight = ctc_loss_weight
+        self.fastemit_lambda = fastemit_lambda
 
-        self.rnnt_loss_fn = RNNTLossNumba(blank=self.blank_token_id, reduction="sum")
+        self.rnnt_loss_fn = RNNTLossNumba(
+            blank=self.blank_token_id,
+            reduction="sum",
+            fastemit_lambda=fastemit_lambda,
+        )
         self.ctc_projection = nn.Linear(encoder.hidden_size, self.vocab_size)
         self.ctc_loss_fn = nn.CTCLoss(blank=self.blank_token_id, reduction="sum", zero_infinity=True)
 
