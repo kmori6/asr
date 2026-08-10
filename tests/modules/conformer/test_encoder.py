@@ -35,6 +35,23 @@ def test_fast_conformer_encoder_preserves_chunkwise_streaming_context() -> None:
     assert features.grad is not None
     assert all(parameter.grad is not None for parameter in encoder.parameters())
 
+    cache = None
+    chunk_outputs = []
+    chunks = features[:1].detach().split((3, 4, 10, 8), dim=1)
+    for index, chunk in enumerate(chunks):
+        chunk_output, cache = encoder.forward_chunk(
+            chunk,
+            cache=cache,
+            chunk_size=2,
+            is_final=index == len(chunks) - 1,
+        )
+        chunk_outputs.append(chunk_output)
+
+    torch.testing.assert_close(torch.cat(chunk_outputs, dim=1), outputs[:1].detach())
+    assert cache is not None
+    assert cache.pending.shape == (1, 0, 8)
+    assert len(cache.blocks) == 2
+
 
 def test_fast_conformer_encoder_uses_full_context_according_to_probability() -> None:
     torch.manual_seed(0)

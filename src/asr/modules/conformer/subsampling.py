@@ -1,6 +1,10 @@
+from typing import cast
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from asr.modules.conformer.cache import FastConformerSubsamplingCache, SubsamplingStageCache
 
 
 class FastConformerSubsampling(nn.Module):
@@ -101,6 +105,101 @@ class FastConformerSubsampling(nn.Module):
         valid_frames = frame_indices[None, :] < output_lengths[:, None]
         x = x.masked_fill(~valid_frames[:, :, None], 0.0)
         return x, output_lengths
+
+    def forward_chunk(
+        self,
+        features: torch.Tensor,
+        cache: FastConformerSubsamplingCache | None = None,
+    ) -> tuple[torch.Tensor, FastConformerSubsamplingCache]:
+        """
+        Args:
+            features: Next unpadded acoustic-feature chunk with shape
+                ``(batch, num_frames, input_size)``. Every frame is treated as valid.
+            cache: States returned by the preceding call, or ``None`` at the
+                beginning of an utterance.
+
+        Returns:
+            Newly available subsampled frames and updated states for all three
+            convolution stages. Concatenated outputs are equivalent to
+            :meth:`forward` on the concatenated input.
+        """
+        if features.ndim != 3:
+            raise ValueError(f"features must have shape (batch, num_frames, input_size), but got {features.shape}")
+        if features.shape[-1] != self.input_size:
+            raise ValueError(f"expected input_size {self.input_size}, but got {features.shape[-1]}")
+
+        stage_caches: tuple[SubsamplingStageCache | None, ...]
+        if cache is None:
+            stage_caches = (None,) * self._NUM_STAGES
+        else:
+            if len(cache.stages) != self._NUM_STAGES:
+                raise ValueError(f"cache must contain {self._NUM_STAGES} subsampling stages")
+            stage_caches = cache.stages
+
+        x = features.unsqueeze(1)
+        x, input_cache = self._forward_stage(x, self.input_conv, stage_caches[0])
+        x = self.activation(x)
+
+        next_stage_caches = [input_cache]
+        for depthwise_conv, pointwise_conv, stage_cache in zip(
+            self.depthwise_convs,
+            self.pointwise_convs,
+            stage_caches[1:],
+            strict=True,
+        ):
+            x, next_stage_cache = self._forward_stage(x, cast(nn.Conv2d, depthwise_conv), stage_cache)
+            if x.shape[2] > 0:
+                x = self.activation(pointwise_conv(x))
+            next_stage_caches.append(next_stage_cache)
+
+        batch_size, channels, num_frames, frequency_size = x.shape
+        x = x.transpose(1, 2).reshape(batch_size, num_frames, channels * frequency_size)
+        x = self.output_projection(x)
+        return x, FastConformerSubsamplingCache(stages=tuple(next_stage_caches))
+
+    def _forward_stage(
+        self,
+        x: torch.Tensor,
+        convolution: nn.Conv2d,
+        cache: SubsamplingStageCache | None,
+    ) -> tuple[torch.Tensor, SubsamplingStageCache]:
+        expected_context_shape = (
+            x.shape[0],
+            convolution.in_channels,
+            self._KERNEL_SIZE - 1,
+            x.shape[3],
+        )
+        if cache is None:
+            context = x.new_zeros(expected_context_shape)
+            num_previous_frames = 0
+        else:
+            if cache.context.shape != expected_context_shape:
+                raise ValueError(
+                    f"subsampling context must have shape {expected_context_shape}, but got {cache.context.shape}"
+                )
+            if cache.context.device != x.device or cache.context.dtype != x.dtype:
+                raise ValueError("subsampling input and context must have the same dtype and device")
+            if cache.num_frames < 0:
+                raise ValueError("cached subsampling frame count must be non-negative")
+            context = cache.context
+            num_previous_frames = cache.num_frames
+
+        convolution_input = torch.cat((context, x), dim=2)
+        next_cache = SubsamplingStageCache(
+            context=convolution_input[:, :, -(self._KERNEL_SIZE - 1) :],
+            num_frames=num_previous_frames + x.shape[2],
+        )
+
+        # The global stride grid starts at input frame zero. An odd number of
+        # previously received frames shifts the first window by one local frame.
+        stride_offset = num_previous_frames % self._STRIDE
+        convolution_input = convolution_input[:, :, stride_offset:]
+        if convolution_input.shape[2] < self._KERNEL_SIZE:
+            output_frequency = (x.shape[3] + self._STRIDE - 1) // self._STRIDE
+            output = x.new_empty((x.shape[0], convolution.out_channels, 0, output_frequency))
+        else:
+            output = convolution(convolution_input)
+        return output, next_cache
 
     @classmethod
     def _pad_time(cls, x: torch.Tensor) -> torch.Tensor:

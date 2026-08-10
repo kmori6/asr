@@ -1,3 +1,3 @@
-from asr.models.fast_conformer_rnnt import FastConformerRNNT
+from asr.models.fast_conformer_rnnt import FastConformerRNNT, FastConformerRNNTCache
 
-__all__ = ["FastConformerRNNT"]
+__all__ = ["FastConformerRNNT", "FastConformerRNNTCache"]

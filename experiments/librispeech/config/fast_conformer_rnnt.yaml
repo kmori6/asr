@@ -85,11 +85,17 @@ train:
   checkpoint_path: null
 
 evaluate:
+  test_file: ${dataset.test_clean_file}
   model_path: ${train.out_dir}/best_model.pt
   out_dir: results/evaluation
   beam_size: 5
   streaming: true
+  # Attention chunks contain 8 frames after 8x subsampling. A 640 ms audio
+  # delivery interval supplies approximately one such chunk at a 10 ms hop.
+  audio_chunk_duration_ms: 640
   chunk_size: 8
+  # Set to a small positive value for a quick evaluation smoke test.
+  max_samples: null
 
 hydra:
   # Keep execution in the launch directory and suppress Hydra's timestamped

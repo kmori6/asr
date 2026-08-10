@@ -1,10 +1,20 @@
+from dataclasses import dataclass
+
 import torch
 import torch.nn as nn
 from warprnnt_numba import RNNTLossNumba
 
-from asr.modules.conformer import FastConformerEncoder
-from asr.modules.frontend import LogMelSpectrogram, SpecAugment
+from asr.modules.conformer import FastConformerEncoder, FastConformerEncoderCache
+from asr.modules.frontend import LogMelSpectrogram, LogMelSpectrogramCache, SpecAugment
 from asr.modules.rnnt import JointNetwork, PredictionNetwork
+
+
+@dataclass(frozen=True, slots=True)
+class FastConformerRNNTCache:
+    """Frontend and encoder states retained across waveform chunks."""
+
+    frontend: LogMelSpectrogramCache | None
+    encoder: FastConformerEncoderCache | None
 
 
 class FastConformerRNNT(nn.Module):
@@ -109,6 +119,55 @@ class FastConformerRNNT(nn.Module):
         features, feature_lengths = self.frontend(waveforms, waveform_lengths)
         features = self.spec_augment(features, feature_lengths)
         return self.encoder(features, feature_lengths, chunk_size)
+
+    def encode_chunk(
+        self,
+        waveforms: torch.Tensor,
+        waveform_lengths: torch.Tensor,
+        cache: FastConformerRNNTCache | None = None,
+        chunk_size: int | None = None,
+        is_final: bool = False,
+    ) -> tuple[torch.Tensor, FastConformerRNNTCache]:
+        """
+        Args:
+            waveforms: Next padded waveform chunk for one utterance with shape
+                ``(1, num_chunk_samples)``.
+            waveform_lengths: Valid samples in the chunk with shape ``(1,)``.
+            cache: Frontend and encoder states from the preceding chunk, or
+                ``None`` for the first chunk.
+            chunk_size: Attention chunk size after 8x subsampling.
+            is_final: If ``True``, flush the encoder's final incomplete chunk.
+
+        Returns:
+            Newly available encoder representations and the updated model cache.
+        """
+        if waveforms.ndim != 2 or waveforms.shape[0] != 1:
+            raise ValueError(
+                f"streaming waveforms must have shape (1, num_chunk_samples), but got {tuple(waveforms.shape)}"
+            )
+        if waveform_lengths.shape != (1,):
+            raise ValueError("streaming waveform_lengths must have shape (1,)")
+
+        frontend_cache = None if cache is None else cache.frontend
+        encoder_cache = None if cache is None else cache.encoder
+        features, feature_lengths, next_frontend_cache = self.frontend.forward_chunk(
+            waveforms,
+            waveform_lengths,
+            frontend_cache,
+        )
+        features = self.spec_augment(features, feature_lengths)
+        num_valid_frames = int(feature_lengths[0].item())
+        encoder_outputs, next_encoder_cache = self.encoder.forward_chunk(
+            features[:, :num_valid_frames],
+            cache=encoder_cache,
+            chunk_size=chunk_size,
+            is_final=is_final,
+        )
+        next_cache = FastConformerRNNTCache(
+            frontend=next_frontend_cache,
+            encoder=next_encoder_cache,
+        )
+        return encoder_outputs, next_cache
 
     def _rnnt_loss(
         self,

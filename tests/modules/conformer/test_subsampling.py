@@ -20,3 +20,13 @@ def test_fast_conformer_subsampling_returns_causal_valid_outputs() -> None:
     changed_future[:, 9:] = torch.randn_like(changed_future[:, 9:])
     changed_outputs, _ = subsampling(changed_future, feature_lengths)
     torch.testing.assert_close(outputs[:, :2], changed_outputs[:, :2])
+
+    cache = None
+    chunk_outputs = []
+    for chunk in features[:1].split((3, 4, 10), dim=1):
+        chunk_output, cache = subsampling.forward_chunk(chunk, cache)
+        chunk_outputs.append(chunk_output)
+
+    torch.testing.assert_close(torch.cat(chunk_outputs, dim=1), outputs[:1])
+    assert cache is not None
+    assert tuple(stage.num_frames for stage in cache.stages) == (17, 9, 5)

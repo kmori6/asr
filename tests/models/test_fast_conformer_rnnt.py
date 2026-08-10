@@ -60,3 +60,25 @@ def test_fast_conformer_rnnt_computes_rnnt_and_ctc_losses() -> None:
     metrics["loss"].backward()
     assert waveforms.grad is not None
     assert all(parameter.grad is not None for parameter in model.parameters())
+
+    model.eval()
+    full_outputs, full_lengths = model.encode(
+        waveforms[:1].detach(),
+        waveform_lengths[:1],
+        chunk_size=2,
+    )
+    cache = None
+    chunk_outputs = []
+    chunks = waveforms[:1].detach().split((13, 47, 64, 132), dim=1)
+    for index, chunk in enumerate(chunks):
+        output, cache = model.encode_chunk(
+            chunk,
+            torch.tensor([chunk.shape[1]]),
+            cache=cache,
+            chunk_size=2,
+            is_final=index == len(chunks) - 1,
+        )
+        chunk_outputs.append(output)
+
+    streaming_outputs = torch.cat(chunk_outputs, dim=1)
+    torch.testing.assert_close(streaming_outputs, full_outputs[:, : full_lengths[0]])

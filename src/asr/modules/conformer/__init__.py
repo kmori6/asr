@@ -1,6 +1,12 @@
 from asr.modules.conformer.attention_mask import chunk_attention_mask
 from asr.modules.conformer.block import ConformerBlock
-from asr.modules.conformer.cache import ConformerBlockCache, KVCache
+from asr.modules.conformer.cache import (
+    ConformerBlockCache,
+    FastConformerEncoderCache,
+    FastConformerSubsamplingCache,
+    KVCache,
+    SubsamplingStageCache,
+)
 from asr.modules.conformer.convolution import Convolution
 from asr.modules.conformer.encoder import FastConformerEncoder
 from asr.modules.conformer.feed_forward import FeedForward
@@ -13,8 +19,11 @@ __all__ = [
     "Convolution",
     "chunk_attention_mask",
     "FastConformerEncoder",
+    "FastConformerEncoderCache",
     "FastConformerSubsampling",
+    "FastConformerSubsamplingCache",
     "FeedForward",
     "KVCache",
     "MultiHeadSelfAttention",
+    "SubsamplingStageCache",
 ]
