@@ -84,7 +84,7 @@ class LogMelSpectrogram(nn.Module):
             hop_length=self.hop_length,
             window=self.window.to(device=waveforms.device, dtype=waveforms.dtype),
             center=False,
-            normalized=False,
+            normalized=False,  # False for causal
             return_complex=True,
         )  # (batch_size, n_freqs = n_fft // 2 + 1, n_frames = (n_samples - n_fft) // hop_length + 1)
         power_spectrogram = spectrogram.abs().square().transpose(1, 2)
