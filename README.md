@@ -32,3 +32,16 @@ uv run scripts/train_tokenizer.py \
 
 The preparation script writes `train.json`, `valid.json`, `test-clean.json`, `test-other.json`, and `train.txt` under
 `data/`. Generated data and results are not committed.
+
+## FastConformer RNN-T training
+
+After preparing the manifests and tokenizer, start training from the LibriSpeech experiment directory:
+
+```bash
+cd experiments/librispeech
+
+uv run scripts/train_fast_conformer_rnnt.py
+```
+
+The default configuration is `config/fast_conformer_rnnt.yaml`. Checkpoints, metric history, and loss plots are written
+to `results/fast_conformer_rnnt/`. Set `train.checkpoint_path` in the configuration to resume from the latest checkpoint.

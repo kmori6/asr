@@ -1,0 +1,113 @@
+# Relative paths are resolved from experiments/librispeech by the experiment scripts.
+dataset:
+  data_dir: data
+  train_file: train.json
+  valid_file: valid.json
+  test_clean_file: test-clean.json
+  test_other_file: test-other.json
+
+tokenizer:
+  tokenizer_dir: results/tokenizer
+
+frontend:
+  # A 512-sample FFT and 160-sample hop correspond to 32 ms and 10 ms at 16 kHz.
+  sample_rate: 16000
+  n_fft: 512
+  hop_length: 160
+  n_mels: 80
+  f_min: 0.0
+  f_max: 8000.0
+
+spec_augment:
+  num_frequency_masks: 2
+  max_frequency_mask_width: 30
+  num_time_masks: 2
+  max_time_mask_width: 40
+
+model:
+  # The tokenizer is trained with --vocab_size 128. Startup validation fails
+  # early if the saved tokenizer and this value do not match.
+  vocab_size: 128
+
+  encoder:
+    hidden_size: 512
+    num_heads: 8
+    kernel_size: 31
+    num_blocks: 12
+    dropout_rate: 0.1
+    conv_channels: 256
+    feed_forward_expansion_factor: 4
+    bias: true
+
+    # Chunk sizes are measured after causal 8x subsampling. Following Section
+    # 2.1, 60% of training batches use a sampled streaming mask and 40% use
+    # full context: https://arxiv.org/abs/2306.08175
+    min_chunk_size: 8
+    max_chunk_size: 32
+    streaming_mask_probability: 0.6
+
+  prediction_network:
+    hidden_size: 512
+    num_layers: 1
+    dropout_rate: 0.1
+
+  joint_network:
+    hidden_size: 640
+    dropout_rate: 0.1
+    bias: true
+
+  ctc_loss_weight: 0.3
+
+train:
+  seed: 42
+  # Keep disabled for the first run because the Numba RNN-T loss is an external
+  # kernel. Enable only after verifying torch.compile on the target environment.
+  compile: false
+  dataloader:
+    train_batch_size: 8
+    valid_batch_size: 8
+    num_workers: 2
+    pin_memory: true
+  optimizer:
+    lr: 1e-4
+    weight_decay: 1e-2
+    max_grad_norm: 1.0
+  scheduler:
+    warmup_steps: 1000
+  epochs: 20
+  grad_accum_steps: 8
+  log_steps: 10
+  out_dir: results/fast_conformer_rnnt
+  # Set a checkpoint path to resume; null starts a new run.
+  checkpoint_path: null
+
+evaluate:
+  model_path: ${train.out_dir}/best_model.pt
+  out_dir: results/evaluation
+  beam_size: 5
+  streaming: true
+  chunk_size: 8
+
+hydra:
+  # Keep execution in the launch directory and suppress Hydra's timestamped
+  # output directory. Experiment artifacts are managed by Trainer instead.
+  # https://hydra.cc/docs/tutorials/basic/running_your_app/working_directory/
+  run:
+    dir: .
+  job:
+    chdir: false
+  output_subdir: null
+  # https://hydra.cc/docs/configure_hydra/logging/
+  job_logging:
+    version: 1
+    formatters:
+      simple:
+        format: "%(asctime)s - %(name)s - %(filename)s:%(lineno)d - %(levelname)s: %(message)s"
+    handlers:
+      console:
+        class: logging.StreamHandler
+        formatter: simple
+        stream: ext://sys.stdout
+    root:
+      handlers: [console]
+    disable_existing_loggers: false
