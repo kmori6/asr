@@ -46,21 +46,24 @@ class Convolution(nn.Module):
         self,
         x: torch.Tensor,
         cache: torch.Tensor | None = None,
+        mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Apply convolution incrementally to a chunk of valid frames.
+        """Apply convolution incrementally to a padded chunk.
 
         Args:
             x: Current input chunk with shape ``(batch, chunk_size, input_size)``.
             cache: Previous post-GLU activations with shape
                 ``(batch, input_size, kernel_size - 1)``. ``None`` starts a new
                 stream with zero left context.
+            mask: Boolean tensor with shape ``(batch, chunk_size)`` where ``True``
+                marks a valid frame.
 
         Returns:
             Current outputs with the same shape as ``x`` and the next fixed-size
             cache. Concatenated chunk outputs are equivalent to a complete-sequence
             forward pass.
         """
-        return self._forward(x, mask=None, cache=cache)
+        return self._forward(x, mask=mask, cache=cache)
 
     def _forward(
         self,
