@@ -35,6 +35,7 @@ class PredictionNetwork(nn.Module):
         self.vocab_size = vocab_size
         self.hidden_size = hidden_size
         self.num_layers = num_layers
+        self.blank_token_id = blank_token_id
         self.embedding = nn.Embedding(vocab_size, hidden_size, padding_idx=blank_token_id)
         self.dropout = nn.Dropout(dropout_rate)
         self.lstm = nn.LSTM(

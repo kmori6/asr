@@ -37,6 +37,8 @@ class FastConformerEncoder(nn.Module):
         self.min_chunk_size = min_chunk_size
         self.max_chunk_size = max_chunk_size
         self.streaming_mask_probability = streaming_mask_probability
+        self.input_size = input_size
+        self.hidden_size = hidden_size
         self.subsampling = FastConformerSubsampling(input_size, hidden_size, conv_channels)
         self.dropout = nn.Dropout(dropout_rate)
         self.blocks = nn.ModuleList(

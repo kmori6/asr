@@ -31,6 +31,7 @@ class JointNetwork(nn.Module):
         if not 0.0 <= dropout_rate < 1.0:
             raise ValueError("dropout_rate must satisfy 0 <= dropout_rate < 1")
 
+        self.vocab_size = vocab_size
         self.encoder_size = encoder_size
         self.predictor_size = predictor_size
         self.encoder_projection = nn.Linear(encoder_size, hidden_size, bias=bias)
