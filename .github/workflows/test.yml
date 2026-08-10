@@ -1,0 +1,30 @@
+name: Test
+
+on:
+  pull_request:
+
+jobs:
+  pytest:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python from .python-version
+        uses: actions/setup-python@v6
+        with:
+          python-version-file: ".python-version"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            **/uv.lock
+
+      - name: Install project dependencies (dev)
+        run: uv sync --frozen --group dev
+
+      - name: Run test suite with pytest
+        run: uv run pytest
