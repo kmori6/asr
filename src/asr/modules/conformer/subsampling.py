@@ -147,6 +147,11 @@ class FastConformerSubsampling(nn.Module):
             stage_caches[1:],
             strict=True,
         ):
+            # An empty upstream stage does not execute its convolution, so
+            # autocast cannot assign the output dtype. No values are present to
+            # convert; retain the dtype established by this stage's cache.
+            if x.shape[2] == 0 and stage_cache is not None:
+                x = x.to(dtype=stage_cache.context.dtype)
             x, next_stage_cache = self._forward_stage(x, cast(nn.Conv2d, depthwise_conv), stage_cache)
             if x.shape[2] > 0:
                 x = self.activation(pointwise_conv(x))

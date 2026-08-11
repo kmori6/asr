@@ -30,3 +30,19 @@ def test_fast_conformer_subsampling_returns_causal_valid_outputs() -> None:
     torch.testing.assert_close(torch.cat(chunk_outputs, dim=1), outputs[:1])
     assert cache is not None
     assert tuple(stage.num_frames for stage in cache.stages) == (17, 9, 5)
+
+
+def test_fast_conformer_subsampling_preserves_cached_dtype_after_empty_chunk() -> None:
+    subsampling = FastConformerSubsampling(input_size=80, output_size=32, conv_channels=8).eval()
+
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        _, cache = subsampling.forward_chunk(torch.randn(1, 64, 80))
+        output, next_cache = subsampling.forward_chunk(torch.empty(1, 0, 80), cache)
+
+    assert output.shape == (1, 0, 32)
+    assert output.dtype == torch.bfloat16
+    assert tuple(stage.context.dtype for stage in next_cache.stages) == (
+        torch.float32,
+        torch.bfloat16,
+        torch.bfloat16,
+    )
