@@ -64,19 +64,15 @@ class LogMelSpectrogram(nn.Module):
         )
 
     def forward(self, waveforms: torch.Tensor, waveform_lengths: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Compute log-Mel features without using future padding.
+        """
 
         Args:
-            waveforms: Padded mono waveforms with shape ``(batch, num_samples)``.
-            waveform_lengths: Valid sample counts with shape ``(batch,)``.
+            waveforms (torch.Tensor): Padded mono waveforms with shape ``(batch, num_samples)``.
+            waveform_lengths (torch.Tensor): Valid sample counts with shape ``(batch,)``.
 
         Returns:
-            Log-Mel features with shape ``(batch, num_frames, n_mels)`` and valid
-            feature lengths with shape ``(batch,)``. Invalid padded frames are zero.
-
-        Note:
-            Frames are not centered, so each frame only depends on samples already received.
-            Computation and output use float32 for FFT and logarithm stability.
+            tuple[torch.Tensor, torch.Tensor]: Log-Mel features with shape ``(batch, num_frames, n_mels)``
+            and the corresponding valid frame counts with shape ``(batch,)``.
         """
         self._validate_waveforms(waveforms, waveform_lengths)
         if torch.any(waveform_lengths < self.n_fft) or torch.any(waveform_lengths > waveforms.shape[1]):
@@ -87,10 +83,7 @@ class LogMelSpectrogram(nn.Module):
         return self._mask_invalid_frames(features, feature_lengths), feature_lengths
 
     def forward_chunk(
-        self,
-        waveforms: torch.Tensor,
-        waveform_lengths: torch.Tensor,
-        cache: LogMelSpectrogramCache | None = None,
+        self, waveforms: torch.Tensor, waveform_lengths: torch.Tensor, cache: LogMelSpectrogramCache | None = None
     ) -> tuple[torch.Tensor, torch.Tensor, LogMelSpectrogramCache]:
         """
         Args:
@@ -156,6 +149,15 @@ class LogMelSpectrogram(nn.Module):
         return features, feature_lengths, next_cache
 
     def _compute_features(self, waveforms: torch.Tensor) -> torch.Tensor:
+        """Compute log-Mel features from padded waveforms without using future padding.
+
+        Args:
+            waveforms (torch.Tensor): Padded mono waveforms with shape ``(batch, num_samples)``.
+
+        Returns:
+            torch.Tensor: Log-Mel features with shape ``(batch, num_frames, n_mels)``.
+        """
+        # NOTE: torch.stft requires float32 for numerical stability
         waveforms = waveforms.float()
         spectrogram = torch.stft(
             waveforms,
@@ -166,7 +168,7 @@ class LogMelSpectrogram(nn.Module):
             normalized=False,  # False for causal
             return_complex=True,
         )  # (batch_size, n_freqs = n_fft // 2 + 1, n_frames = (n_samples - n_fft) // hop_length + 1)
-        power_spectrogram = spectrogram.abs().square().transpose(1, 2)
+        power_spectrogram = spectrogram.abs().square().transpose(1, 2)  # (batch_size, n_frames, n_freqs)
         mel_spectrogram = power_spectrogram @ self.mel_filters.to(
             device=waveforms.device,
             dtype=power_spectrogram.dtype,
@@ -174,6 +176,15 @@ class LogMelSpectrogram(nn.Module):
         return mel_spectrogram.clamp_min(1e-10).log()
 
     def _feature_lengths(self, waveform_lengths: torch.Tensor) -> torch.Tensor:
+        """Compute the number of valid causal log-Mel frames for each waveform.
+
+        Args:
+            waveform_lengths (torch.Tensor): Valid sample counts with shape ``(batch,)``.
+
+        Returns:
+            torch.Tensor: Number of complete frames that fit inside each waveform under the
+            causal ``n_fft``/``hop_length`` formulation, clamped to zero for shorter inputs.
+        """
         return (
             torch.div(
                 waveform_lengths - self.n_fft,
@@ -185,6 +196,15 @@ class LogMelSpectrogram(nn.Module):
 
     @staticmethod
     def _mask_invalid_frames(features: torch.Tensor, feature_lengths: torch.Tensor) -> torch.Tensor:
+        """Mask out frames that fall beyond each valid feature length.
+
+        Args:
+            features (torch.Tensor): Log-Mel feature tensors with shape ``(batch, num_frames, n_mels)``.
+            feature_lengths (torch.Tensor): Valid frame counts with shape ``(batch,)``.
+
+        Returns:
+            torch.Tensor: A copy of ``features`` with invalid padded frames replaced by zero.
+        """
         frame_indices = torch.arange(features.shape[1], device=features.device)
         valid_frames = frame_indices[None, :] < feature_lengths[:, None]
         return features.masked_fill(~valid_frames[:, :, None], 0.0)
