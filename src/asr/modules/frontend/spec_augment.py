@@ -5,8 +5,9 @@ import torch.nn as nn
 class SpecAugment(nn.Module):
     """Apply frequency and time masking to log-Mel features.
 
-    Time warping is intentionally omitted. The masking operations follow
-    https://www.isca-archive.org/interspeech_2019/park19e_interspeech.pdf.
+    Proposed in D. S. Park et al., "SpecAugment: A Simple Data Augmentation Method for Automatic Speech Recognition,"
+    in Proc. Interspeech, 2019, pp. 2613-2617.
+
     """
 
     def __init__(
@@ -28,15 +29,17 @@ class SpecAugment(nn.Module):
         self.max_time_mask_width = max_time_mask_width
 
     def forward(self, features: torch.Tensor, feature_lengths: torch.Tensor) -> torch.Tensor:
-        """Mask valid regions of a batch of log-Mel features.
+        """
 
         Args:
-            features: Log-Mel features with shape ``(batch, num_frames, n_mels)``.
-            feature_lengths: Valid frame counts with shape ``(batch,)``.
+            features (torch.Tensor): Log-Mel features with shape ``(batch, num_frames, n_mels)``.
+            feature_lengths (torch.Tensor): Valid frame counts with shape ``(batch,)``.
 
         Returns:
-            Features with independently sampled frequency and time masks. Evaluation
-            mode returns the input unchanged. Shape, dtype, and device are preserved.
+            torch.Tensor: Features with independently sampled frequency and time masks (0 applied to masked positions).
+
+        Note:
+            Time warping is intentionally omitted according to Disscussion.
         """
         if features.ndim != 3:
             raise ValueError(f"features must have shape (batch, num_frames, n_mels), but got {tuple(features.shape)}")
@@ -78,13 +81,18 @@ class SpecAugment(nn.Module):
         return features.masked_fill(mask, 0.0)
 
     @staticmethod
-    def _sample_mask(
-        lengths: torch.Tensor,
-        max_length: int,
-        num_masks: int,
-        max_mask_width: int,
-    ) -> torch.Tensor:
-        """Sample independent contiguous masks for a batch of sequences."""
+    def _sample_mask(lengths: torch.Tensor, max_length: int, num_masks: int, max_mask_width: int) -> torch.Tensor:
+        """Sample independent contiguous masks for a batch of sequences.
+
+        Args:
+            lengths (torch.Tensor): Valid lengths of each sequence in the batch with shape ``(batch,)``.
+            max_length (int): Maximum length of the sequences (padded length).
+            num_masks (int): Number of masks to sample for each sequence.
+            max_mask_width (int): Maximum width of each mask.
+
+        Returns:
+            torch.Tensor: Boolean tensor of shape ``(batch, max_length)`` where True indicates masked positions.
+        """
         batch_size = lengths.shape[0]
         if num_masks == 0 or max_mask_width == 0:
             return torch.zeros((batch_size, max_length), dtype=torch.bool, device=lengths.device)
