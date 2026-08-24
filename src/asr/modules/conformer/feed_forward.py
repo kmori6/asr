@@ -3,7 +3,11 @@ import torch.nn as nn
 
 
 class FeedForward(nn.Module):
-    """Position-wise feed-forward network used in a Conformer block."""
+    """Position-wise feed-forward networks.
+
+    Proposed in A. Vaswani et al., "Attention is all you need," in NeurIPS, 2017, pp. 5998-6008.
+
+    """
 
     def __init__(self, input_size: int, hidden_size: int, dropout_rate: float, bias: bool = True) -> None:
         super().__init__()
@@ -20,13 +24,13 @@ class FeedForward(nn.Module):
         self.w_2 = nn.Linear(hidden_size, input_size, bias=bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Transform each frame independently.
+        """
 
         Args:
-            x: Input tensor with shape ``(..., input_size)``.
+            x (torch.Tensor): Input tensor with shape ``(..., input_size)``.
 
         Returns:
-            Tensor with the same shape, dtype, and device as ``x``.
+            torch.Tensor: Tensor with the same shape, dtype, and device as ``x``.
         """
         x = self.w_1(x)
         x = self.activation(x)
