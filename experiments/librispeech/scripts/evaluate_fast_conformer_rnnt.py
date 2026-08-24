@@ -5,6 +5,7 @@ from typing import cast
 
 import hydra
 import torch
+from fast_conformer_rnnt_factory import build_fast_conformer_rnnt, validate_tokenizer
 from omegaconf import DictConfig
 from torchaudio.functional import edit_distance
 from tqdm import tqdm
@@ -13,86 +14,16 @@ from transformers import PreTrainedTokenizerFast
 from asr.data import SpeechTextDataset
 from asr.decoding import RNNTBeamSearch
 from asr.models import FastConformerRNNT
-from asr.modules.conformer import FastConformerEncoder
-from asr.modules.frontend import LogMelSpectrogram, SpecAugment
-from asr.modules.rnnt import JointNetwork, PredictionNetwork
 from asr.streaming import AudioChunker, StreamingRecognizer
 
 logger = getLogger(__name__)
 EXPERIMENT_DIR = Path(__file__).resolve().parents[1]
-BLANK_TOKEN = "[BLANK]"
 
 
 def resolve_experiment_path(path: str) -> Path:
     """Resolve a config path relative to the LibriSpeech experiment directory."""
     resolved_path = Path(path).expanduser()
     return resolved_path if resolved_path.is_absolute() else EXPERIMENT_DIR / resolved_path
-
-
-def validate_tokenizer(tokenizer: PreTrainedTokenizerFast, expected_vocab_size: int) -> int:
-    """Validate tokenizer properties required for RNN-T decoding."""
-    if len(tokenizer) != expected_vocab_size:
-        raise ValueError(f"Tokenizer vocabulary size must be {expected_vocab_size}, but got {len(tokenizer)}.")
-    vocabulary = tokenizer.get_vocab()
-    if BLANK_TOKEN not in vocabulary:
-        raise ValueError(f"Tokenizer must define {BLANK_TOKEN}.")
-    return vocabulary[BLANK_TOKEN]
-
-
-def build_model(config: DictConfig, blank_token_id: int) -> FastConformerRNNT:
-    """Construct the training architecture for checkpoint loading."""
-    frontend = LogMelSpectrogram(
-        sample_rate=config.frontend.sample_rate,
-        n_fft=config.frontend.n_fft,
-        hop_length=config.frontend.hop_length,
-        n_mels=config.frontend.n_mels,
-        f_min=config.frontend.f_min,
-        f_max=config.frontend.f_max,
-    )
-    spec_augment = SpecAugment(
-        num_frequency_masks=config.spec_augment.num_frequency_masks,
-        max_frequency_mask_width=config.spec_augment.max_frequency_mask_width,
-        num_time_masks=config.spec_augment.num_time_masks,
-        max_time_mask_width=config.spec_augment.max_time_mask_width,
-    )
-    encoder = FastConformerEncoder(
-        input_size=config.frontend.n_mels,
-        hidden_size=config.model.encoder.hidden_size,
-        num_heads=config.model.encoder.num_heads,
-        kernel_size=config.model.encoder.kernel_size,
-        num_blocks=config.model.encoder.num_blocks,
-        dropout_rate=config.model.encoder.dropout_rate,
-        min_chunk_size=config.model.encoder.min_chunk_size,
-        max_chunk_size=config.model.encoder.max_chunk_size,
-        streaming_mask_probability=config.model.encoder.streaming_mask_probability,
-        conv_channels=config.model.encoder.conv_channels,
-        feed_forward_expansion_factor=config.model.encoder.feed_forward_expansion_factor,
-        bias=config.model.encoder.bias,
-    )
-    prediction_network = PredictionNetwork(
-        vocab_size=config.model.vocab_size,
-        hidden_size=config.model.prediction_network.hidden_size,
-        num_layers=config.model.prediction_network.num_layers,
-        dropout_rate=config.model.prediction_network.dropout_rate,
-        blank_token_id=blank_token_id,
-    )
-    joint_network = JointNetwork(
-        vocab_size=config.model.vocab_size,
-        encoder_size=config.model.encoder.hidden_size,
-        predictor_size=config.model.prediction_network.hidden_size,
-        hidden_size=config.model.joint_network.hidden_size,
-        dropout_rate=config.model.joint_network.dropout_rate,
-        bias=config.model.joint_network.bias,
-    )
-    return FastConformerRNNT(
-        frontend=frontend,
-        spec_augment=spec_augment,
-        encoder=encoder,
-        prediction_network=prediction_network,
-        joint_network=joint_network,
-        ctc_loss_weight=config.model.ctc_loss_weight,
-        fastemit_lambda=config.model.fastemit_lambda,
-    )
 
 
 @torch.inference_mode()
@@ -157,7 +88,7 @@ def main(config: DictConfig) -> None:
         PreTrainedTokenizerFast.from_pretrained(tokenizer_dir),
     )
     blank_token_id = validate_tokenizer(tokenizer, config.model.vocab_size)
-    model = build_model(config, blank_token_id).to(device)
+    model = build_fast_conformer_rnnt(config, blank_token_id).to(device)
     state_dict = torch.load(model_path, map_location=device, weights_only=True)
     model.load_state_dict(state_dict)
     model.eval()

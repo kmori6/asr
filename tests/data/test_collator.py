@@ -3,12 +3,12 @@ from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 from tokenizers.pre_tokenizers import Whitespace
 from torch.utils.data import DataLoader
-from transformers import PreTrainedTokenizerFast
+from transformers import PreTrainedTokenizerFast, Wav2Vec2FeatureExtractor
 
-from asr.data import SpeechTextCollator, SpeechTextSample
+from asr.data import CTCCollator, RNNTCollator, SpeechTextSample
 
 
-def test_speech_text_collator_with_dataloader() -> None:
+def create_tokenizer() -> PreTrainedTokenizerFast:
     backend_tokenizer = Tokenizer(
         WordLevel(
             vocab={"[BLANK]": 0, "[UNK]": 1, "hello": 2, "world": 3},
@@ -21,7 +21,11 @@ def test_speech_text_collator_with_dataloader() -> None:
         unk_token="[UNK]",
         additional_special_tokens=["[BLANK]"],
     )
-    samples = [
+    return tokenizer
+
+
+def create_samples() -> list[SpeechTextSample]:
+    return [
         SpeechTextSample(
             utterance_id="1",
             waveform=torch.tensor([0.1, 0.2, 0.3]),
@@ -35,12 +39,17 @@ def test_speech_text_collator_with_dataloader() -> None:
             text="hello",
         ),
     ]
+
+
+def test_rnnt_collator_with_dataloader() -> None:
+    tokenizer = create_tokenizer()
+    samples = create_samples()
     # DataLoader's generic type does not model collate_fn changing the item type into a batch mapping.
     dataloader: DataLoader[dict[str, torch.Tensor]] = DataLoader(
         samples,  # type: ignore[arg-type]
         batch_size=2,
         shuffle=False,
-        collate_fn=SpeechTextCollator(tokenizer, blank_token_id=0),
+        collate_fn=RNNTCollator(tokenizer, blank_token_id=0),
     )
 
     batch = next(iter(dataloader))
@@ -49,3 +58,20 @@ def test_speech_text_collator_with_dataloader() -> None:
     torch.testing.assert_close(batch["waveform_lengths"], torch.tensor([3, 2]))
     torch.testing.assert_close(batch["labels"], torch.tensor([[2, 3], [2, 0]]))
     torch.testing.assert_close(batch["label_lengths"], torch.tensor([2, 1]))
+
+
+def test_ctc_collator_pads_inputs_and_masks_label_padding() -> None:
+    tokenizer = create_tokenizer()
+    tokenizer.pad_token = "[BLANK]"
+    feature_extractor = Wav2Vec2FeatureExtractor(
+        sampling_rate=16_000,
+        do_normalize=False,
+        return_attention_mask=True,
+    )
+    collator = CTCCollator(feature_extractor, tokenizer, sample_rate=16_000)
+
+    batch = collator(create_samples())
+
+    torch.testing.assert_close(batch["input_values"], torch.tensor([[0.1, 0.2, 0.3], [0.4, 0.5, 0.0]]))
+    torch.testing.assert_close(batch["attention_mask"], torch.tensor([[1, 1, 1], [1, 1, 0]], dtype=torch.int32))
+    torch.testing.assert_close(batch["labels"], torch.tensor([[2, 3], [2, -100]]))

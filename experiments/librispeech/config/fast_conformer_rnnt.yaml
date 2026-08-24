@@ -97,6 +97,18 @@ evaluate:
   # Set to a small positive value for a quick evaluation smoke test.
   max_samples: null
 
+infer:
+  model_path: ${train.out_dir}/best_model.pt
+  # Set this from the command line to an arbitrary WAV, FLAC, or other audio
+  # file supported by SoundFile. Multi-channel audio is downmixed and audio is
+  # resampled to frontend.sample_rate.
+  input_path: null
+  out_path: results/inference.json
+  beam_size: 5
+  streaming: true
+  audio_chunk_duration_ms: 640
+  chunk_size: 8
+
 hydra:
   # Keep execution in the launch directory and suppress Hydra's timestamped
   # output directory. Experiment artifacts are managed by Trainer instead.

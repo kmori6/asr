@@ -1,0 +1,80 @@
+# Relative paths are resolved from experiments/librispeech by the experiment script.
+dataset:
+  data_dir: data
+  train_file: train.json
+  valid_file: valid.json
+  test_clean_file: test-clean.json
+  test_other_file: test-other.json
+  sample_rate: 16000
+
+tokenizer:
+  tokenizer_dir: results/tokenizer
+  expected_vocab_size: 128
+  blank_token: "[BLANK]"
+
+model:
+  pretrained_model_name_or_path: facebook/hubert-base-ls960
+  freeze_feature_encoder: true
+  ctc_loss_reduction: mean
+  ctc_zero_infinity: true
+
+train:
+  seed: 42
+  out_dir: results/hubert_ctc
+  # A Transformers checkpoint directory resumes model, optimizer, scheduler,
+  # scaler, trainer state, and the completed-step position. Null starts anew.
+  checkpoint_path: null
+  epochs: 10
+  train_batch_size: 16
+  valid_batch_size: 16
+  grad_accum_steps: 4
+  learning_rate: 3e-5
+  weight_decay: 1e-2
+  max_grad_norm: 1.0
+  lr_scheduler_type: linear
+  warmup_steps: 1000
+  logging_steps: 10
+  save_total_limit: 2
+  dataloader_num_workers: 2
+  dataloader_pin_memory: true
+  gradient_checkpointing: true
+  compile: false
+  # auto uses BF16 when supported, otherwise FP16 on CUDA and FP32 on CPU.
+  # Explicit alternatives are bf16, fp16, and fp32.
+  mixed_precision: auto
+
+evaluate:
+  test_file: ${dataset.test_clean_file}
+  model_path: ${train.out_dir}
+  out_dir: results/hubert_ctc_evaluation
+  beam_size: 10
+  # Set to a small positive value for a quick evaluation smoke test.
+  max_samples: null
+
+infer:
+  model_path: ${train.out_dir}
+  # Set this from the command line to an arbitrary audio file supported by
+  # SoundFile. Multi-channel audio is downmixed and resampled to 16 kHz.
+  input_path: null
+  out_path: results/hubert_ctc_inference.json
+  beam_size: 10
+
+hydra:
+  run:
+    dir: .
+  job:
+    chdir: false
+  output_subdir: null
+  job_logging:
+    version: 1
+    formatters:
+      simple:
+        format: "%(asctime)s - %(name)s - %(filename)s:%(lineno)d - %(levelname)s: %(message)s"
+    handlers:
+      console:
+        class: logging.StreamHandler
+        formatter: simple
+        stream: ext://sys.stdout
+    root:
+      handlers: [console]
+    disable_existing_loggers: false
