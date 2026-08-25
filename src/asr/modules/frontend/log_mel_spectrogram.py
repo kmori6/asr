@@ -72,7 +72,7 @@ class LogMelSpectrogram(nn.Module):
 
         Returns:
             tuple[torch.Tensor, torch.Tensor]: Log-Mel features with shape ``(batch, num_frames, n_mels)``
-            and the corresponding valid frame counts with shape ``(batch,)``.
+                and the corresponding valid frame counts with shape ``(batch,)``.
         """
         self._validate_waveforms(waveforms, waveform_lengths)
         if torch.any(waveform_lengths < self.n_fft) or torch.any(waveform_lengths > waveforms.shape[1]):
