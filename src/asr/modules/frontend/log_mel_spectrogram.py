@@ -86,17 +86,18 @@ class LogMelSpectrogram(nn.Module):
         self, waveforms: torch.Tensor, waveform_lengths: torch.Tensor, cache: LogMelSpectrogramCache | None = None
     ) -> tuple[torch.Tensor, torch.Tensor, LogMelSpectrogramCache]:
         """
+
         Args:
-            waveforms: Next padded waveform chunk with shape
-                ``(batch, num_chunk_samples)``.
-            waveform_lengths: Valid samples in the chunk with shape ``(batch,)``.
-            cache: Unprocessed samples returned by the preceding call for the
+            waveforms (torch.Tensor): Next padded waveform chunk with shape ``(batch, num_chunk_samples)``.
+            waveform_lengths (torch.Tensor): Valid samples in the chunk with shape ``(batch,)``.
+            cache (LogMelSpectrogramCache | None, optional): Unprocessed samples returned by the preceding call for the
                 same utterances, or ``None`` for the first chunks.
 
         Returns:
-            Newly available log-Mel frames, their valid lengths, and the samples
-            beginning at the next uncomputed frame boundary. Discard the cache
-            after the final chunk of each utterance.
+            tuple[torch.Tensor, torch.Tensor, LogMelSpectrogramCache]:
+                Newly available log-Mel frames, their valid lengths, and the samples
+                beginning at the next uncomputed frame boundary.
+                Discard the cache after the final chunk of each utterance.
 
         Note:
             Only complete ``n_fft``-sample frames are emitted. The cache keeps

@@ -2,7 +2,12 @@ from typing import cast
 
 import torch
 from torch.nn.utils.rnn import pad_sequence
-from transformers import PreTrainedTokenizerBase, PreTrainedTokenizerFast, Wav2Vec2FeatureExtractor
+from transformers import (
+    PreTrainedTokenizerBase,
+    PreTrainedTokenizerFast,
+    Wav2Vec2FeatureExtractor,
+    WhisperFeatureExtractor,
+)
 
 from asr.data.dataset import SpeechTextSample
 
@@ -123,6 +128,93 @@ class CTCCollator:
         label_attention_mask = cast(torch.Tensor, label_batch["attention_mask"])
         if labels.shape[1] == 0:
             raise ValueError("CTC transcripts must produce at least one token")
+
+        batch = {name: cast(torch.Tensor, value) for name, value in input_batch.items()}
+        batch["labels"] = labels.masked_fill(label_attention_mask.ne(1), -100)
+        return batch
+
+
+class EncoderDecoderCollator:
+    """Create padded Whisper inputs and autoregressive decoder labels.
+
+    Audio is converted to fixed-length log-Mel features by Whisper's feature
+    extractor. Token padding is replaced by ``-100`` for cross-entropy loss,
+    and the leading decoder-start token is removed because Whisper inserts it
+    again when shifting labels to create ``decoder_input_ids``.
+    """
+
+    def __init__(
+        self,
+        feature_extractor: WhisperFeatureExtractor,
+        tokenizer: PreTrainedTokenizerBase,
+        sample_rate: int,
+        decoder_start_token_id: int,
+        max_target_length: int,
+    ) -> None:
+        if sample_rate <= 0:
+            raise ValueError("sample_rate must be positive")
+        if feature_extractor.sampling_rate != sample_rate:
+            raise ValueError(
+                f"Feature extractor sample rate must be {sample_rate}, but got {feature_extractor.sampling_rate}."
+            )
+        if tokenizer.pad_token_id is None:
+            raise ValueError("tokenizer must define a pad token")
+        if decoder_start_token_id < 0:
+            raise ValueError("decoder_start_token_id must be non-negative")
+        if max_target_length < 1:
+            raise ValueError("max_target_length must be positive")
+
+        self.feature_extractor = feature_extractor
+        self.tokenizer = tokenizer
+        self.sample_rate = sample_rate
+        self.decoder_start_token_id = decoder_start_token_id
+        self.max_target_length = max_target_length
+
+    def __call__(self, samples: list[SpeechTextSample]) -> dict[str, torch.Tensor]:
+        """Collate a non-empty list of mono waveform and transcript samples."""
+        if not samples:
+            raise ValueError("samples must not be empty")
+        for sample in samples:
+            if sample.sample_rate != self.sample_rate:
+                raise ValueError(
+                    f"Expected a {self.sample_rate} Hz sample rate, but got {sample.sample_rate} "
+                    f"for {sample.utterance_id}."
+                )
+            if sample.waveform.shape[0] > self.feature_extractor.n_samples:
+                max_duration_seconds = self.feature_extractor.n_samples / self.sample_rate
+                raise ValueError(
+                    f"Whisper audio must not exceed {max_duration_seconds:g} seconds: {sample.utterance_id}"
+                )
+
+        waveforms = [sample.waveform.detach().cpu().numpy() for sample in samples]
+        input_batch = self.feature_extractor(
+            waveforms,
+            sampling_rate=self.sample_rate,
+            padding="max_length",
+            truncation=True,
+            return_attention_mask=True,
+            return_tensors="pt",
+        )
+        label_batch = self.tokenizer(
+            [sample.text for sample in samples],
+            add_special_tokens=True,
+            padding=True,
+            truncation=False,
+            return_attention_mask=True,
+            return_tensors="pt",
+        )
+
+        labels = cast(torch.Tensor, label_batch["input_ids"])
+        label_attention_mask = cast(torch.Tensor, label_batch["attention_mask"])
+        if labels.shape[1] == 0 or not labels[:, 0].eq(self.decoder_start_token_id).all():
+            raise ValueError("Every Whisper label sequence must begin with decoder_start_token_id")
+
+        labels = labels[:, 1:]
+        label_attention_mask = label_attention_mask[:, 1:]
+        if labels.shape[1] > self.max_target_length:
+            raise ValueError(
+                f"Whisper labels must not exceed {self.max_target_length} tokens, but got {labels.shape[1]}."
+            )
 
         batch = {name: cast(torch.Tensor, value) for name, value in input_batch.items()}
         batch["labels"] = labels.masked_fill(label_attention_mask.ne(1), -100)

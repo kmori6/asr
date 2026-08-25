@@ -94,3 +94,35 @@ uv run scripts/infer_hubert_ctc.py \
 The transcript is printed to standard output, while token IDs, the length-normalized beam-search score, timing, and
 input metadata are written to `results/hubert_ctc_inference.json`. Input audio is downmixed to mono and resampled to
 16 kHz when necessary.
+
+## Whisper encoder-decoder fine-tuning
+
+The encoder-decoder experiment fine-tunes Transformers' `openai/whisper-small` checkpoint for English LibriSpeech
+transcription. It uses Whisper's own processor and the repository's `EncoderDecoderCollator`:
+
+```bash
+cd experiments/librispeech
+
+uv run scripts/train_whisper.py
+```
+
+The default configuration is `config/whisper.yaml`. The best validation-loss model, processor, checkpoints, trainer
+state, and train/validation metrics are written to `results/whisper/`.
+
+Evaluate the saved model with normalized English WER:
+
+```bash
+uv run scripts/evaluate_whisper.py
+```
+
+Evaluation artifacts are written to `results/whisper_evaluation/`. Utterances longer than Whisper's 30-second
+short-form limit are recorded as skipped and excluded from WER. Recognize an audio file with:
+
+```bash
+uv run scripts/infer_whisper.py \
+  infer.input_path=/path/to/audio.wav
+```
+
+The transcript is printed to standard output and detailed inference metadata is written to
+`results/whisper_inference.json`. Input audio is downmixed to mono and resampled to 16 kHz when necessary; audio longer
+than 30 seconds is recorded as skipped without running generation.
