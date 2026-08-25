@@ -20,18 +20,10 @@ class ConformerBlockCache:
 
 
 @dataclass(frozen=True)
-class SubsamplingStageCache:
-    """Left context and stride phase cached by one subsampling stage."""
-
-    context: torch.Tensor  # (batch, input_channels, kernel_size - 1, input_frequency)
-    num_frames: int
-
-
-@dataclass(frozen=True)
 class FastConformerSubsamplingCache:
-    """States cached by the three FastConformer subsampling stages."""
+    """Unconsumed convolution inputs cached by the subsampling stages."""
 
-    stages: tuple[SubsamplingStageCache, ...]
+    buffers: tuple[torch.Tensor, ...]  # Each is (batch, input_channels, 1 or 2, input_frequency).
 
 
 @dataclass(frozen=True)

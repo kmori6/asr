@@ -6,7 +6,7 @@ import torch.nn as nn
 from asr.modules.conformer.attention_mask import chunk_attention_mask
 from asr.modules.conformer.block import ConformerBlock
 from asr.modules.conformer.cache import ConformerBlockCache, FastConformerEncoderCache
-from asr.modules.conformer.subsampling import FastConformerSubsampling
+from asr.modules.conformer.subsampling import CausalFastConformerSubsampling
 
 
 class FastConformerEncoder(nn.Module):
@@ -42,7 +42,7 @@ class FastConformerEncoder(nn.Module):
         self.streaming_mask_probability = streaming_mask_probability
         self.input_size = input_size
         self.hidden_size = hidden_size
-        self.subsampling = FastConformerSubsampling(input_size, hidden_size, conv_channels)
+        self.subsampling = CausalFastConformerSubsampling(input_size, hidden_size, conv_channels)
         self.dropout = nn.Dropout(dropout_rate)
         self.blocks = nn.ModuleList(
             ConformerBlock(

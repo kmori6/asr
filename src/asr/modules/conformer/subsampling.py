@@ -4,21 +4,21 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from asr.modules.conformer.cache import FastConformerSubsamplingCache, SubsamplingStageCache
+from asr.modules.conformer.cache import FastConformerSubsamplingCache
 
 
 class FastConformerSubsampling(nn.Module):
-    """Apply causal 8x convolutional subsampling to acoustic features.
+    """Apply non-causal 8x convolutional subsampling to acoustic features.
 
-    The first stage is a regular strided convolution. The second and third
-    stages are depthwise-separable strided convolutions, following the
-    FastConformer subsampling architecture described in
-    https://arxiv.org/pdf/2305.05084.
+    Proposed in D. Rekesh et al., "Fast Conformer with Linearly Scalable Attention for Efficient Speech Recognition,"
+    in Proc. ASRU, 2023.
+
     """
 
     _NUM_STAGES = 3
     _KERNEL_SIZE = 3
     _STRIDE = 2
+    _CONV_PADDING: int | tuple[int, int] = 1
 
     def __init__(self, input_size: int, output_size: int, conv_channels: int = 256) -> None:
         super().__init__()
@@ -38,7 +38,7 @@ class FastConformerSubsampling(nn.Module):
             out_channels=conv_channels,
             kernel_size=self._KERNEL_SIZE,
             stride=self._STRIDE,
-            padding=(0, 1),
+            padding=self._CONV_PADDING,
         )
         self.depthwise_convs = nn.ModuleList(
             nn.Conv2d(
@@ -46,7 +46,7 @@ class FastConformerSubsampling(nn.Module):
                 out_channels=conv_channels,
                 kernel_size=self._KERNEL_SIZE,
                 stride=self._STRIDE,
-                padding=(0, 1),
+                padding=self._CONV_PADDING,
                 groups=conv_channels,
             )
             for _ in range(self._NUM_STAGES - 1)
@@ -57,30 +57,44 @@ class FastConformerSubsampling(nn.Module):
         self.activation = nn.ReLU()
         self.output_projection = nn.Linear(conv_channels * frequency_size, output_size)
 
-    def forward(
-        self,
-        features: torch.Tensor,
-        feature_lengths: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Subsample a padded batch of acoustic features.
+    def forward(self, features: torch.Tensor, feature_lengths: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """
 
         Args:
-            features: Acoustic features with shape ``(batch, num_frames, input_size)``.
-            feature_lengths: Valid frame counts with shape ``(batch,)``.
+            features (torch.Tensor): Acoustic features with shape ``(batch, num_frames, input_size)``.
+            feature_lengths (torch.Tensor): Valid frame counts with shape ``(batch,)``.
 
         Returns:
-            Encoded features with shape ``(batch, ceil(num_frames / 8), output_size)``
-            and valid lengths ``ceil(feature_lengths / 8)``. Invalid output frames
-            are zero.
-
-        Note:
-            Time-axis padding is added only on the left. Each output therefore
-            depends only on its current and previous input frames.
+            tuple[torch.Tensor, torch.Tensor]: Encoded features
+                with shape ``(batch, ceil(num_frames / 8), output_size)``
+                and valid lengths ``ceil(feature_lengths / 8)``. Invalid output frames are zero.
         """
+        self._validate_inputs(features, feature_lengths)
+
+        stage_lengths = feature_lengths
+        x = features.unsqueeze(1)  # (batch, 1, num_frames, input_size)
+        x = self._mask_invalid_frames(x, stage_lengths)
+
+        x = self.activation(self.input_conv(x))
+        stage_lengths = self._subsample_once(stage_lengths)
+        for depthwise_conv, pointwise_conv in zip(self.depthwise_convs, self.pointwise_convs, strict=True):
+            # Prevent padded activations from entering the valid right edge of the next non-causal convolution.
+            x = self._mask_invalid_frames(x, stage_lengths)
+            x = self.activation(pointwise_conv(depthwise_conv(x)))
+            stage_lengths = self._subsample_once(stage_lengths)
+
+        x = self._project(x)
+        x = self._mask_invalid_outputs(x, stage_lengths)
+        return x, stage_lengths
+
+    def _validate_features(self, features: torch.Tensor) -> None:
         if features.ndim != 3:
             raise ValueError(f"features must have shape (batch, num_frames, input_size), but got {features.shape}")
         if features.shape[-1] != self.input_size:
             raise ValueError(f"expected input_size {self.input_size}, but got {features.shape[-1]}")
+
+    def _validate_inputs(self, features: torch.Tensor, feature_lengths: torch.Tensor) -> None:
+        self._validate_features(features)
         if feature_lengths.ndim != 1 or feature_lengths.shape[0] != features.shape[0]:
             raise ValueError(
                 "feature_lengths must have shape (batch,), "
@@ -91,129 +105,153 @@ class FastConformerSubsampling(nn.Module):
         if torch.any(feature_lengths < 0) or torch.any(feature_lengths > features.shape[1]):
             raise ValueError(f"feature lengths must be between 0 and the padded feature length ({features.shape[1]})")
 
-        x = features.unsqueeze(1)  # (batch, 1, num_frames, input_size)
-        x = self.activation(self.input_conv(self._pad_time(x)))
-        for depthwise_conv, pointwise_conv in zip(self.depthwise_convs, self.pointwise_convs, strict=True):
-            x = self.activation(pointwise_conv(depthwise_conv(self._pad_time(x))))
-
+    def _project(self, x: torch.Tensor) -> torch.Tensor:
         batch_size, channels, num_frames, frequency_size = x.shape
         x = x.transpose(1, 2).reshape(batch_size, num_frames, channels * frequency_size)
-        x = self.output_projection(x)
+        return self.output_projection(x)
 
-        output_lengths = self._subsample_lengths(feature_lengths)
-        frame_indices = torch.arange(num_frames, device=x.device)
-        valid_frames = frame_indices[None, :] < output_lengths[:, None]
-        x = x.masked_fill(~valid_frames[:, :, None], 0.0)
-        return x, output_lengths
+    @staticmethod
+    def _mask_invalid_frames(x: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
+        frame_indices = torch.arange(x.shape[2], device=x.device)
+        valid_frames = frame_indices[None, None, :, None] < lengths[:, None, None, None]
+        return x.masked_fill(~valid_frames, 0.0)
 
-    def forward_chunk(
-        self,
-        features: torch.Tensor,
-        cache: FastConformerSubsamplingCache | None = None,
-    ) -> tuple[torch.Tensor, FastConformerSubsamplingCache]:
-        """
-        Args:
-            features: Next unpadded acoustic-feature chunk with shape
-                ``(batch, num_frames, input_size)``. Every frame is treated as valid.
-            cache: States returned by the preceding call, or ``None`` at the
-                beginning of an utterance.
-
-        Returns:
-            Newly available subsampled frames and updated states for all three
-            convolution stages. Concatenated outputs are equivalent to
-            :meth:`forward` on the concatenated input.
-        """
-        if features.ndim != 3:
-            raise ValueError(f"features must have shape (batch, num_frames, input_size), but got {features.shape}")
-        if features.shape[-1] != self.input_size:
-            raise ValueError(f"expected input_size {self.input_size}, but got {features.shape[-1]}")
-
-        stage_caches: tuple[SubsamplingStageCache | None, ...]
-        if cache is None:
-            stage_caches = (None,) * self._NUM_STAGES
-        else:
-            if len(cache.stages) != self._NUM_STAGES:
-                raise ValueError(f"cache must contain {self._NUM_STAGES} subsampling stages")
-            stage_caches = cache.stages
-
-        x = features.unsqueeze(1)
-        x, input_cache = self._forward_stage(x, self.input_conv, stage_caches[0])
-        x = self.activation(x)
-
-        next_stage_caches = [input_cache]
-        for depthwise_conv, pointwise_conv, stage_cache in zip(
-            self.depthwise_convs,
-            self.pointwise_convs,
-            stage_caches[1:],
-            strict=True,
-        ):
-            # An empty upstream stage does not execute its convolution, so
-            # autocast cannot assign the output dtype. No values are present to
-            # convert; retain the dtype established by this stage's cache.
-            if x.shape[2] == 0 and stage_cache is not None:
-                x = x.to(dtype=stage_cache.context.dtype)
-            x, next_stage_cache = self._forward_stage(x, cast(nn.Conv2d, depthwise_conv), stage_cache)
-            if x.shape[2] > 0:
-                x = self.activation(pointwise_conv(x))
-            next_stage_caches.append(next_stage_cache)
-
-        batch_size, channels, num_frames, frequency_size = x.shape
-        x = x.transpose(1, 2).reshape(batch_size, num_frames, channels * frequency_size)
-        x = self.output_projection(x)
-        return x, FastConformerSubsamplingCache(stages=tuple(next_stage_caches))
-
-    def _forward_stage(
-        self,
-        x: torch.Tensor,
-        convolution: nn.Conv2d,
-        cache: SubsamplingStageCache | None,
-    ) -> tuple[torch.Tensor, SubsamplingStageCache]:
-        expected_context_shape = (
-            x.shape[0],
-            convolution.in_channels,
-            self._KERNEL_SIZE - 1,
-            x.shape[3],
-        )
-        if cache is None:
-            context = x.new_zeros(expected_context_shape)
-            num_previous_frames = 0
-        else:
-            if cache.context.shape != expected_context_shape:
-                raise ValueError(
-                    f"subsampling context must have shape {expected_context_shape}, but got {cache.context.shape}"
-                )
-            if cache.context.device != x.device or cache.context.dtype != x.dtype:
-                raise ValueError("subsampling input and context must have the same dtype and device")
-            if cache.num_frames < 0:
-                raise ValueError("cached subsampling frame count must be non-negative")
-            context = cache.context
-            num_previous_frames = cache.num_frames
-
-        convolution_input = torch.cat((context, x), dim=2)
-        next_cache = SubsamplingStageCache(
-            context=convolution_input[:, :, -(self._KERNEL_SIZE - 1) :],
-            num_frames=num_previous_frames + x.shape[2],
-        )
-
-        # The global stride grid starts at input frame zero. An odd number of
-        # previously received frames shifts the first window by one local frame.
-        stride_offset = num_previous_frames % self._STRIDE
-        convolution_input = convolution_input[:, :, stride_offset:]
-        if convolution_input.shape[2] < self._KERNEL_SIZE:
-            output_frequency = (x.shape[3] + self._STRIDE - 1) // self._STRIDE
-            output = x.new_empty((x.shape[0], convolution.out_channels, 0, output_frequency))
-        else:
-            output = convolution(convolution_input)
-        return output, next_cache
+    @staticmethod
+    def _mask_invalid_outputs(x: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
+        frame_indices = torch.arange(x.shape[1], device=x.device)
+        valid_frames = frame_indices[None, :] < lengths[:, None]
+        return x.masked_fill(~valid_frames[:, :, None], 0.0)
 
     @classmethod
-    def _pad_time(cls, x: torch.Tensor) -> torch.Tensor:
-        """Left-pad the time axis for a causal kernel-size-three convolution."""
-        return F.pad(x, (0, 0, cls._KERNEL_SIZE - 1, 0))  # (batch, channels, 2 + num_frames, input_size)
+    def _subsample_once(cls, lengths: torch.Tensor) -> torch.Tensor:
+        """Apply one round of ``ceil(length / 2)``."""
+        return torch.div(lengths + cls._STRIDE - 1, cls._STRIDE, rounding_mode="floor")
 
     @classmethod
     def _subsample_lengths(cls, lengths: torch.Tensor) -> torch.Tensor:
         """Apply three rounds of ``ceil(length / 2)``."""
         for _ in range(cls._NUM_STAGES):
-            lengths = torch.div(lengths + cls._STRIDE - 1, cls._STRIDE, rounding_mode="floor")
+            lengths = cls._subsample_once(lengths)
         return lengths
+
+
+class CausalFastConformerSubsampling(FastConformerSubsampling):
+    """Apply a causal variant of Fast Conformer's 8x subsampling."""
+
+    _CONV_PADDING = (0, 1)
+
+    def forward(self, features: torch.Tensor, feature_lengths: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+
+        Args:
+            features (torch.Tensor): Acoustic features with shape ``(batch, num_frames, input_size)``.
+            feature_lengths (torch.Tensor): Valid frame counts with shape ``(batch,)``.
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: Encoded features
+                with shape ``(batch, ceil(num_frames / 8), output_size)``
+                and valid lengths ``ceil(feature_lengths / 8)``. Invalid output frames are zero.
+        """
+        self._validate_inputs(features, feature_lengths)
+
+        x = features.unsqueeze(1)  # (batch, 1, num_frames, input_size)
+        x = self.activation(self.input_conv(self._pad_time(x)))
+        for depthwise_conv, pointwise_conv in zip(self.depthwise_convs, self.pointwise_convs, strict=True):
+            x = self.activation(pointwise_conv(depthwise_conv(self._pad_time(x))))
+
+        x = self._project(x)
+        output_lengths = self._subsample_lengths(feature_lengths)
+        x = self._mask_invalid_outputs(x, output_lengths)
+        return x, output_lengths
+
+    def forward_chunk(
+        self, features: torch.Tensor, cache: FastConformerSubsamplingCache | None = None
+    ) -> tuple[torch.Tensor, FastConformerSubsamplingCache]:
+        """
+
+        Args:
+            features (torch.Tensor): Next unpadded acoustic-feature chunk with shape
+                ``(batch, num_frames, input_size)``. Every frame is treated as valid.
+            cache (FastConformerSubsamplingCache | None, optional): States returned by the preceding call,
+                or ``None`` at the beginning of an utterance.
+
+        Returns:
+            tuple[torch.Tensor, FastConformerSubsamplingCache]: Newly available subsampled frames and updated states
+                for all convolution stages. Concatenated outputs are equivalent to `forward` on the concatenated input.
+        """
+        self._validate_features(features)
+
+        buffers: tuple[torch.Tensor | None, ...]
+        if cache is None:
+            buffers = (None,) * self._NUM_STAGES
+        else:
+            if len(cache.buffers) != self._NUM_STAGES:
+                raise ValueError(f"cache must contain {self._NUM_STAGES} subsampling buffers")
+            buffers = cache.buffers
+
+        x = features.unsqueeze(1)
+        x, input_buffer = self._forward_chunk_stage(x, self.input_conv, None, buffers[0])
+
+        next_buffers = [input_buffer]
+        for depthwise_conv, pointwise_conv, buffer in zip(
+            self.depthwise_convs,
+            self.pointwise_convs,
+            buffers[1:],
+            strict=True,
+        ):
+            x, next_buffer = self._forward_chunk_stage(
+                x,
+                cast(nn.Conv2d, depthwise_conv),
+                cast(nn.Conv2d, pointwise_conv),
+                buffer,
+            )
+            next_buffers.append(next_buffer)
+
+        x = self._project(x)
+        return x, FastConformerSubsamplingCache(buffers=tuple(next_buffers))
+
+    def _forward_chunk_stage(
+        self,
+        x: torch.Tensor,
+        convolution: nn.Conv2d,
+        pointwise_convolution: nn.Conv2d | None,
+        buffer: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if buffer is None:
+            buffer = x.new_zeros((x.shape[0], convolution.in_channels, self._KERNEL_SIZE - 1, x.shape[3]))
+        else:
+            valid_shape = (
+                buffer.ndim == 4
+                and buffer.shape[:2] == (x.shape[0], convolution.in_channels)
+                and buffer.shape[2] in (1, self._KERNEL_SIZE - 1)
+                and buffer.shape[3] == x.shape[3]
+            )
+            if not valid_shape:
+                raise ValueError(
+                    "subsampling buffer must have shape "
+                    f"({x.shape[0]}, {convolution.in_channels}, 1 or {self._KERNEL_SIZE - 1}, {x.shape[3]})"
+                )
+            if buffer.device != x.device:
+                raise ValueError("subsampling input and buffer must be on the same device")
+            if buffer.dtype != x.dtype:
+                if x.shape[2] > 0:
+                    raise ValueError("subsampling input and buffer must have the same dtype")
+                x = x.to(dtype=buffer.dtype)
+
+        convolution_input = torch.cat((buffer, x), dim=2)
+        if convolution_input.shape[2] < self._KERNEL_SIZE:
+            output_frequency = (x.shape[3] + self._STRIDE - 1) // self._STRIDE
+            output = x.new_empty((x.shape[0], convolution.out_channels, 0, output_frequency))
+        else:
+            output = convolution(convolution_input)
+
+        num_consumed_frames = output.shape[2] * self._STRIDE
+        next_buffer = convolution_input[:, :, num_consumed_frames:].clone()
+        if pointwise_convolution is not None and output.shape[2] > 0:
+            output = pointwise_convolution(output)
+        return self.activation(output), next_buffer
+
+    @classmethod
+    def _pad_time(cls, x: torch.Tensor) -> torch.Tensor:
+        """Left-pad the time axis for a causal kernel-size-three convolution."""
+        return F.pad(x, (0, 0, cls._KERNEL_SIZE - 1, 0))  # (batch, channels, 2 + num_frames, input_size)

@@ -7,21 +7,16 @@ from asr.modules.conformer.cache import KVCache
 
 
 class MultiHeadSelfAttention(nn.Module):
-    """Multi-head self-attention with Transformer-XL relative positional encoding.
+    """Multi-head attention with relative positional encoding.
 
-    Proposed in P. Shaw et al., "Self-attention with relative position representations," in NAACL, 2018, pp. 464-468.
+    Proposed in Z. Dai et al., "Transformer-XL: attentive language models beyond a fixed-length context,"
+    in ACL, 2019, pp. 2978-2988.
 
     """
 
     inverse_frequencies: torch.Tensor
 
-    def __init__(
-        self,
-        input_size: int,
-        num_heads: int,
-        dropout_rate: float,
-        bias: bool = True,
-    ) -> None:
+    def __init__(self, input_size: int, num_heads: int, dropout_rate: float, bias: bool = True) -> None:
         super().__init__()
         if input_size <= 0:
             raise ValueError("input_size must be positive")
@@ -51,47 +46,52 @@ class MultiHeadSelfAttention(nn.Module):
         self.register_buffer("inverse_frequencies", inverse_frequencies, persistent=False)
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        """Apply self-attention to a complete sequence.
+        """
 
         Args:
-            x: Input tensor with shape ``(batch, num_frames, input_size)``.
-            mask: Boolean tensor with shape ``(batch, num_frames, num_frames)``
+            x (torch.Tensor): Input tensor with shape ``(batch, num_frames, input_size)``.
+            mask (torch.Tensor): Boolean tensor with shape ``(batch, num_frames, num_frames)``
                 where ``True`` marks an allowed query-key pair.
 
         Returns:
-            Output tensor with the same shape as ``x``. A fully masked query
-            produces an all-zero output.
+            torch.Tensor: Output tensor with the same shape as ``x``. A fully masked query
+                produces an all-zero output.
         """
         output, _ = self._forward(x, mask, cache=None)
         return output
 
     def forward_chunk(
-        self,
-        x: torch.Tensor,
-        mask: torch.Tensor,
-        cache: KVCache | None = None,
+        self, x: torch.Tensor, mask: torch.Tensor, cache: KVCache | None = None
     ) -> tuple[torch.Tensor, KVCache]:
-        """Apply self-attention to a chunk and update its projected KV cache.
+        """
 
         Args:
-            x: Current input chunk with shape ``(batch, chunk_size, input_size)``.
-            mask: Boolean tensor with shape
+            x (torch.Tensor): Current input chunk with shape ``(batch, chunk_size, input_size)``.
+            mask (torch.Tensor): Boolean tensor with shape
                 ``(batch, chunk_size, cached_length + chunk_size)`` where ``True``
                 marks an allowed query-key pair.
-            cache: Projected keys and values from preceding chunks.
+            cache (KVCache | None, optional): Projected keys and values from preceding chunks.
 
         Returns:
-            Current chunk outputs and the updated cache containing all frames seen
-            so far.
+            tuple[torch.Tensor, KVCache]: Current chunk outputs and the updated cache
+                containing all frames seen so far.
         """
         return self._forward(x, mask, cache)
 
-    def _forward(
-        self,
-        x: torch.Tensor,
-        mask: torch.Tensor,
-        cache: KVCache | None,
-    ) -> tuple[torch.Tensor, KVCache]:
+    def _forward(self, x: torch.Tensor, mask: torch.Tensor, cache: KVCache | None) -> tuple[torch.Tensor, KVCache]:
+        """
+
+        Args:
+            x (torch.Tensor): Current input with shape ``(batch, query_length, input_size)``.
+            mask (torch.Tensor): Boolean tensor with shape ``(batch, query_length, cached_length + query_length)``
+                where ``True`` marks an allowed query-key pair.
+            cache (KVCache | None): Projected keys and values from preceding chunks,
+                or ``None`` when processing a complete sequence or the first chunk.
+
+        Returns:
+            tuple[torch.Tensor, KVCache]: Current outputs with shape ``(batch, query_length, input_size)``
+                and the updated cache containing projected keys and values for all frames seen so far.
+        """
         if x.ndim != 3:
             raise ValueError(f"x must have shape (batch, num_frames, input_size), but got {tuple(x.shape)}")
         if x.shape[-1] != self.input_size:
@@ -135,11 +135,7 @@ class MultiHeadSelfAttention(nn.Module):
             v = torch.cat((cache.value, v), dim=2)
 
         next_cache = KVCache(key=k, value=v)
-        positional_encoding = self._relative_positional_encoding(
-            query_length=query_length,
-            key_length=key_length,
-            reference=q,
-        )
+        positional_encoding = self._relative_positional_encoding(query_length, key_length, reference=q)
         p = self.w_p(positional_encoding).view(-1, self.h, self.d_k).transpose(0, 1)
 
         content_scores = torch.matmul(q + self.b_u[None, :, None, :], k.transpose(-2, -1))
@@ -164,25 +160,26 @@ class MultiHeadSelfAttention(nn.Module):
         return x.view(batch_size, num_frames, self.h, self.d_k).transpose(1, 2)
 
     def _relative_positional_encoding(
-        self,
-        query_length: int,
-        key_length: int,
-        reference: torch.Tensor,
+        self, query_length: int, key_length: int, reference: torch.Tensor
     ) -> torch.Tensor:
         """Create sinusoidal encodings for all query-key relative distances."""
-        positions = torch.arange(
-            key_length - 1,
-            -query_length,
-            -1,
-            dtype=torch.float32,
-            device=reference.device,
-        )
+        positions = torch.arange(key_length - 1, -query_length, -1, dtype=torch.float32, device=reference.device)
         angles = positions[:, None] * self.inverse_frequencies[None, :]
         return torch.stack((angles.sin(), angles.cos()), dim=-1).flatten(1).to(dtype=reference.dtype)
 
     @staticmethod
     def _relative_shift(x: torch.Tensor, key_length: int) -> torch.Tensor:
-        """Align relative-position scores with their query-key pairs."""
+        """Align relative-position scores with their query-key pairs.
+
+        Example:
+            >>> distances = torch.tensor([4, 3, 2, 1, 0, -1, -2])
+            >>> x = distances.repeat(3, 1).reshape(1, 1, 3, 7)
+            >>> MultiHeadSelfAttention._relative_shift(x, key_length=5)
+            tensor([[[[ 2,  1,  0, -1, -2],
+                      [ 3,  2,  1,  0, -1],
+                      [ 4,  3,  2,  1,  0]]]])
+
+        """
         batch_size, num_heads, query_length, position_length = x.shape
         x = nn.functional.pad(x, (1, 0))
         x = x.view(batch_size, num_heads, position_length + 1, query_length)
