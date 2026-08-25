@@ -13,12 +13,7 @@ class PredictionNetwork(nn.Module):
     """
 
     def __init__(
-        self,
-        vocab_size: int,
-        hidden_size: int,
-        num_layers: int,
-        dropout_rate: float,
-        blank_token_id: int,
+        self, vocab_size: int, hidden_size: int, num_layers: int, dropout_rate: float, blank_token_id: int
     ) -> None:
         super().__init__()
         if vocab_size <= 0:
@@ -47,20 +42,18 @@ class PredictionNetwork(nn.Module):
         )
 
     def forward(
-        self,
-        tokens: torch.Tensor,
-        state: PredictionState | None = None,
+        self, tokens: torch.Tensor, state: PredictionState | None = None
     ) -> tuple[torch.Tensor, PredictionState]:
         """
+
         Args:
-            tokens: Token IDs with shape ``(batch, sequence_length)``.
-            state: Optional LSTM hidden and cell states, each with shape
-                ``(num_layers, batch, hidden_size)``. ``None`` initializes both
-                states to zero.
+            tokens (torch.Tensor): Token IDs with shape ``(batch, sequence_length)``.
+            state (PredictionState | None, optional): Optional LSTM hidden and cell states, each with shape
+                ``(num_layers, batch, hidden_size)``. ``None`` initializes both states to zero.
 
         Returns:
-            Prediction embeddings with shape
-            ``(batch, sequence_length, hidden_size)`` and the updated LSTM state.
+            tuple[torch.Tensor, PredictionState]: Prediction embeddings with shape
+                ``(batch, sequence_length, hidden_size)`` and the updated LSTM state.
         """
         if tokens.ndim != 2:
             raise ValueError(f"tokens must have shape (batch, sequence_length), but got {tuple(tokens.shape)}")

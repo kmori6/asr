@@ -40,21 +40,16 @@ class JointNetwork(nn.Module):
         self.dropout = nn.Dropout(dropout_rate)
         self.output_projection = nn.Linear(hidden_size, vocab_size, bias=bias)
 
-    def forward(
-        self,
-        encoder_outputs: torch.Tensor,
-        predictor_outputs: torch.Tensor,
-    ) -> torch.Tensor:
+    def forward(self, encoder_outputs: torch.Tensor, predictor_outputs: torch.Tensor) -> torch.Tensor:
         """
+
         Args:
-            encoder_outputs: Encoder representations with shape
-                ``(batch, num_frames, encoder_size)``.
-            predictor_outputs: Prediction representations with shape
+            encoder_outputs (torch.Tensor): Encoder representations with shape ``(batch, num_frames, encoder_size)``.
+            predictor_outputs (torch.Tensor): Prediction representations with shape
                 ``(batch, sequence_length, predictor_size)``.
 
         Returns:
-            Logits with shape
-            ``(batch, num_frames, sequence_length, vocab_size)``.
+            torch.Tensor: Logits with shape ``(batch, num_frames, sequence_length, vocab_size)``.
         """
         if encoder_outputs.ndim != 3:
             raise ValueError(
