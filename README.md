@@ -33,9 +33,10 @@ uv run scripts/train_tokenizer.py \
 The preparation script writes `train.json`, `valid.json`, `test-clean.json`, `test-other.json`, and `train.txt` under
 `data/`. Generated data and results are not committed.
 
-## FastConformer RNN-T training
+## FastConformer RNN-T
 
-After preparing the manifests and tokenizer, start training from the LibriSpeech experiment directory:
+The LibriSpeech experiment provides separate non-streaming and streaming workflows. After preparing the manifests and
+tokenizer, train the full-context model from the experiment directory:
 
 ```bash
 cd experiments/librispeech
@@ -46,18 +47,30 @@ uv run scripts/train_fast_conformer_rnnt.py
 The default configuration is `config/fast_conformer_rnnt.yaml`. Checkpoints, metric history, and loss plots are written
 to `results/fast_conformer_rnnt/`. Set `train.checkpoint_path` in the configuration to resume from the latest checkpoint.
 
-Recognize an arbitrary audio file with the trained checkpoint:
+Evaluate the saved checkpoint or recognize an arbitrary audio file with full-context encoding:
 
 ```bash
-cd experiments/librispeech
+uv run scripts/evaluate_fast_conformer_rnnt.py
 
-uv run scripts/infer_fast_conformer.py \
+uv run scripts/infer_fast_conformer_rnnt.py \
   infer.input_path=/path/to/audio.wav
 ```
 
-The transcript is printed to standard output and a JSON record containing the transcript, token IDs, decoding score,
-timing, and inference settings is written to `results/inference.json`. Input audio is downmixed to mono and resampled
-to 16 kHz when necessary. Set `infer.streaming=false` for complete-waveform inference.
+Train and run the cache-aware streaming model with the corresponding streaming entrypoints:
+
+```bash
+uv run scripts/train_streaming_fast_conformer_rnnt.py
+
+uv run scripts/evaluate_streaming_fast_conformer_rnnt.py
+
+uv run scripts/infer_streaming_fast_conformer_rnnt.py \
+  infer.input_path=/path/to/audio.wav
+```
+
+The streaming workflow uses `config/streaming_fast_conformer_rnnt.yaml` and writes checkpoints to
+`results/streaming_fast_conformer_rnnt/`. Evaluation writes references, hypotheses, predictions, and WER metrics to
+the model-specific evaluation directory. Inference prints the transcript and writes token IDs, the decoding score,
+timing, and mode-specific settings to JSON. Input audio is downmixed to mono and resampled to 16 kHz when necessary.
 
 ## HuBERT CTC fine-tuning
 

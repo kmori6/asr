@@ -6,7 +6,7 @@ from typing import cast
 import hydra
 import torch
 import torch.nn as nn
-from fast_conformer_rnnt_factory import build_fast_conformer_rnnt, validate_tokenizer
+from fast_conformer_rnnt_factory import build_streaming_fast_conformer_rnnt, validate_tokenizer
 from omegaconf import DictConfig
 from torch.amp import GradScaler
 from torch.optim import AdamW
@@ -33,7 +33,7 @@ def select_amp_dtype(device: torch.device) -> torch.dtype:
     return torch.bfloat16
 
 
-@hydra.main(version_base=None, config_path="../config", config_name="fast_conformer_rnnt")
+@hydra.main(version_base=None, config_path="../config", config_name="streaming_fast_conformer_rnnt")
 def main(config: DictConfig) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(config.train.seed)
@@ -86,7 +86,8 @@ def main(config: DictConfig) -> None:
         collate_fn=collate_fn,
     )
 
-    model = build_fast_conformer_rnnt(config, blank_token_id).to(device)
+    model = build_streaming_fast_conformer_rnnt(config, blank_token_id).to(device)
+
     optimizer = AdamW(
         model.parameters(),
         lr=config.train.optimizer.lr,

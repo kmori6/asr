@@ -5,7 +5,7 @@ from typing import cast
 
 import hydra
 import torch
-from fast_conformer_rnnt_factory import build_fast_conformer_rnnt, validate_tokenizer
+from fast_conformer_rnnt_factory import build_streaming_fast_conformer_rnnt, validate_tokenizer
 from omegaconf import DictConfig
 from torchaudio.functional import edit_distance
 from tqdm import tqdm
@@ -13,7 +13,7 @@ from transformers import PreTrainedTokenizerFast
 
 from asr.data import SpeechTextDataset
 from asr.decoding import RNNTBeamSearch
-from asr.models import FastConformerRNNT
+from asr.streaming import AudioChunker, StreamingRecognizer
 
 logger = getLogger(__name__)
 EXPERIMENT_DIR = Path(__file__).resolve().parents[1]
@@ -23,24 +23,6 @@ def resolve_experiment_path(path: str) -> Path:
     """Resolve a config path relative to the LibriSpeech experiment directory."""
     resolved_path = Path(path).expanduser()
     return resolved_path if resolved_path.is_absolute() else EXPERIMENT_DIR / resolved_path
-
-
-@torch.inference_mode()
-def recognize(
-    waveform: torch.Tensor,
-    model: FastConformerRNNT,
-    searcher: RNNTBeamSearch,
-    device: torch.device,
-    amp_dtype: torch.dtype,
-) -> list[int]:
-    """Encode one complete waveform and return its best token sequence."""
-    searcher.reset()
-    waveform = waveform.to(device).unsqueeze(0)
-    waveform_length = torch.tensor([waveform.shape[1]], dtype=torch.long, device=device)
-    with torch.autocast(device.type, dtype=amp_dtype, enabled=device.type == "cuda"):
-        encoder_outputs, encoder_lengths = model.encode(waveform, waveform_length)
-        num_encoder_frames = int(encoder_lengths[0].item())
-        return searcher.search(encoder_outputs[:, :num_encoder_frames]).token_ids
 
 
 def word_error_rate(hypotheses: list[str], references: list[str]) -> tuple[float, int]:
@@ -55,7 +37,7 @@ def word_error_rate(hypotheses: list[str], references: list[str]) -> tuple[float
     return num_errors / num_reference_words, num_reference_words
 
 
-@hydra.main(version_base=None, config_path="../config", config_name="fast_conformer_rnnt")
+@hydra.main(version_base=None, config_path="../config", config_name="streaming_fast_conformer_rnnt")
 def main(config: DictConfig) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if device.type == "cuda":
@@ -86,15 +68,26 @@ def main(config: DictConfig) -> None:
         PreTrainedTokenizerFast.from_pretrained(tokenizer_dir),
     )
     blank_token_id = validate_tokenizer(tokenizer, config.model.vocab_size)
-    model = build_fast_conformer_rnnt(config, blank_token_id).to(device)
+    model = build_streaming_fast_conformer_rnnt(config, blank_token_id).to(device)
     state_dict = torch.load(model_path, map_location=device, weights_only=True)
     model.load_state_dict(state_dict)
     model.eval()
+
     searcher = RNNTBeamSearch(
         prediction_network=model.prediction_network,
         joint_network=model.joint_network,
         beam_width=config.evaluate.beam_size,
         blank_token_id=blank_token_id,
+    )
+    audio_chunker = AudioChunker(
+        chunk_duration_ms=config.evaluate.audio_chunk_duration_ms,
+        sample_rate=config.frontend.sample_rate,
+    )
+    streaming_recognizer = StreamingRecognizer(
+        model=model,
+        searcher=searcher,
+        chunk_size=config.evaluate.chunk_size,
+        amp_dtype=amp_dtype,
     )
 
     hypotheses: list[str] = []
@@ -106,7 +99,9 @@ def main(config: DictConfig) -> None:
     ):
         for index in tqdm(range(num_samples), desc="Evaluating", dynamic_ncols=True):
             sample = dataset[index]
-            token_ids = recognize(sample.waveform, model, searcher, device, amp_dtype)
+            result = streaming_recognizer.recognize(sample.waveform, audio_chunker)
+            token_ids = result.token_ids
+
             hypothesis = cast(str, tokenizer.decode(token_ids, skip_special_tokens=True)).strip()
             references.append(sample.text)
             hypotheses.append(hypothesis)
@@ -124,8 +119,10 @@ def main(config: DictConfig) -> None:
         "wer": wer,
         "num_utterances": num_samples,
         "num_reference_words": num_reference_words,
-        "streaming": False,
+        "streaming": True,
         "beam_size": int(config.evaluate.beam_size),
+        "encoder_chunk_size": int(config.evaluate.chunk_size),
+        "audio_chunk_duration_ms": int(config.evaluate.audio_chunk_duration_ms),
     }
     with (out_dir / "metrics.json").open("w", encoding="utf-8") as metrics_file:
         json.dump(metrics, metrics_file, ensure_ascii=False, indent=2)

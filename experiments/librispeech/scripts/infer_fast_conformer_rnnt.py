@@ -12,8 +12,7 @@ from transformers import PreTrainedTokenizerFast
 
 from asr.data import load_audio
 from asr.decoding import RNNTBeamSearch, RNNTBeamSearchResult
-from asr.models import StreamingFastConformerRNNT
-from asr.streaming import AudioChunker, StreamingRecognizer
+from asr.models import FastConformerRNNT
 
 logger = getLogger(__name__)
 EXPERIMENT_DIR = Path(__file__).resolve().parents[1]
@@ -26,24 +25,19 @@ def resolve_experiment_path(path: str) -> Path:
 
 
 @torch.inference_mode()
-def recognize_offline(
+def recognize(
     waveform: torch.Tensor,
-    model: StreamingFastConformerRNNT,
+    model: FastConformerRNNT,
     searcher: RNNTBeamSearch,
-    chunk_size: int,
     device: torch.device,
     amp_dtype: torch.dtype,
 ) -> RNNTBeamSearchResult:
-    """Encode a complete waveform and return its best RNN-T hypothesis."""
+    """Encode one complete waveform and return its best RNN-T hypothesis."""
     searcher.reset()
     batched_waveform = waveform.to(device).unsqueeze(0)
     waveform_length = torch.tensor([batched_waveform.shape[1]], dtype=torch.long, device=device)
     with torch.autocast(device.type, dtype=amp_dtype, enabled=device.type == "cuda"):
-        encoder_outputs, encoder_lengths = model.encode(
-            batched_waveform,
-            waveform_length,
-            chunk_size=chunk_size,
-        )
+        encoder_outputs, encoder_lengths = model.encode(batched_waveform, waveform_length)
         num_encoder_frames = int(encoder_lengths[0].item())
         return searcher.search(encoder_outputs[:, :num_encoder_frames])
 
@@ -75,7 +69,6 @@ def main(config: DictConfig) -> None:
     state_dict = torch.load(model_path, map_location=device, weights_only=True)
     model.load_state_dict(state_dict)
     model.eval()
-
     searcher = RNNTBeamSearch(
         prediction_network=model.prediction_network,
         joint_network=model.joint_network,
@@ -86,29 +79,7 @@ def main(config: DictConfig) -> None:
     waveform = load_audio(input_path, sample_rate=sample_rate)
 
     start_time = time.perf_counter()
-    if bool(config.infer.streaming):
-        recognizer = StreamingRecognizer(
-            model=model,
-            searcher=searcher,
-            chunk_size=int(config.infer.chunk_size),
-            amp_dtype=amp_dtype,
-        )
-        result = recognizer.recognize(
-            waveform,
-            AudioChunker(
-                chunk_duration_ms=int(config.infer.audio_chunk_duration_ms),
-                sample_rate=sample_rate,
-            ),
-        )
-    else:
-        result = recognize_offline(
-            waveform=waveform,
-            model=model,
-            searcher=searcher,
-            chunk_size=int(config.infer.chunk_size),
-            device=device,
-            amp_dtype=amp_dtype,
-        )
+    result = recognize(waveform, model, searcher, device, amp_dtype)
     inference_seconds = time.perf_counter() - start_time
 
     transcript = cast(str, tokenizer.decode(result.token_ids, skip_special_tokens=True)).strip()
@@ -125,10 +96,8 @@ def main(config: DictConfig) -> None:
         "inference_seconds": inference_seconds,
         "real_time_factor": inference_seconds / audio_duration_seconds,
         "device": str(device),
-        "streaming": bool(config.infer.streaming),
+        "streaming": False,
         "beam_size": int(config.infer.beam_size),
-        "encoder_chunk_size": int(config.infer.chunk_size),
-        "audio_chunk_duration_ms": int(config.infer.audio_chunk_duration_ms),
     }
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", encoding="utf-8") as output_file:
