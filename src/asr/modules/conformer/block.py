@@ -1,14 +1,23 @@
+from typing import cast
+
 import torch
 import torch.nn as nn
 
 from asr.modules.conformer.cache import ConformerBlockCache
-from asr.modules.conformer.convolution import Convolution
+from asr.modules.conformer.convolution import CausalConvolution, Convolution
 from asr.modules.conformer.feed_forward import FeedForward
 from asr.modules.conformer.multi_head_self_attention import MultiHeadSelfAttention
 
 
 class ConformerBlock(nn.Module):
-    """Macaron-style Conformer block described in https://arxiv.org/pdf/2005.08100."""
+    """Non-streaming Conformer block.
+
+    Proposed in A. Gulati et al., "Conformer: Convolution-augmented Transformer for Speech Recognition,"
+    in Proc. Interspeech, 2020, pp. 5036-5040.
+
+    """
+
+    _convolution_type: type[Convolution] = Convolution
 
     def __init__(
         self,
@@ -29,23 +38,23 @@ class ConformerBlock(nn.Module):
         self.mha_norm = nn.LayerNorm(input_size)
         self.mha = MultiHeadSelfAttention(input_size, num_heads, dropout_rate, bias=bias)
         self.conv_norm = nn.LayerNorm(input_size)
-        self.conv = Convolution(input_size, kernel_size, bias=bias)
+        self.conv = self._convolution_type(input_size, kernel_size, bias=bias)
         self.ffn2_norm = nn.LayerNorm(input_size)
         self.ffn2 = FeedForward(input_size, hidden_size, dropout_rate, bias=bias)
         self.dropout = nn.Dropout(dropout_rate)
         self.final_norm = nn.LayerNorm(input_size)
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        """Apply a Conformer block to a complete sequence.
+        """
 
         Args:
-            x: Input tensor with shape ``(batch, num_frames, input_size)``.
-            mask: Boolean attention mask with shape
+            x (torch.Tensor): Input tensor with shape ``(batch, num_frames, input_size)``.
+            mask (torch.Tensor): Boolean attention mask with shape
                 ``(batch, num_frames, num_frames)`` where ``True`` marks an
                 allowed query-key pair.
 
         Returns:
-            Output tensor with the same shape as ``x``. Invalid frames are zero.
+            torch.Tensor: Output tensor with the same shape as ``x``. Invalid frames are zero.
         """
         frame_mask = mask.any(dim=-1)
         x = x + 0.5 * self.dropout(self.ffn1(self.ffn1_norm(x)))
@@ -55,23 +64,28 @@ class ConformerBlock(nn.Module):
         x = self.final_norm(x)
         return x.masked_fill(~frame_mask[:, :, None], 0.0)
 
+
+class StreamingConformerBlock(ConformerBlock):
+    """Conformer block with causal convolution and cached chunk processing."""
+
+    _convolution_type = CausalConvolution
+
     def forward_chunk(
-        self,
-        x: torch.Tensor,
-        mask: torch.Tensor,
-        cache: ConformerBlockCache | None = None,
+        self, x: torch.Tensor, mask: torch.Tensor, cache: ConformerBlockCache | None = None
     ) -> tuple[torch.Tensor, ConformerBlockCache]:
-        """Apply a Conformer block incrementally to one chunk.
+        """
 
         Args:
-            x: Current input chunk with shape ``(batch, chunk_size, input_size)``.
-            mask: Boolean attention mask with shape
+            x (torch.Tensor): Current input chunk with shape ``(batch, chunk_size, input_size)``.
+            mask (torch.Tensor): Boolean attention mask with shape
                 ``(batch, chunk_size, cached_length + chunk_size)`` where ``True``
                 marks an allowed query-key pair.
-            cache: Attention and convolution states from preceding chunks.
+            cache (ConformerBlockCache | None, optional): Attention and convolution states
+                from preceding chunks. ``None`` starts a new stream.
 
         Returns:
-            Current chunk outputs and the updated block cache.
+            tuple[torch.Tensor, ConformerBlockCache]: Current chunk outputs with shape
+                ``(batch, chunk_size, input_size)`` and the updated block cache.
         """
         frame_mask = mask.any(dim=-1)
         attention_cache = None if cache is None else cache.attention
@@ -84,7 +98,8 @@ class ConformerBlock(nn.Module):
             attention_cache,
         )
         x = x + self.dropout(attention_output)
-        convolution_output, next_convolution_cache = self.conv.forward_chunk(
+        convolution = cast(CausalConvolution, self.conv)
+        convolution_output, next_convolution_cache = convolution.forward_chunk(
             self.conv_norm(x),
             cache=convolution_cache,
             mask=frame_mask,

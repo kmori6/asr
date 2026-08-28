@@ -2,8 +2,8 @@ import torch
 from pytest import approx
 
 from asr.decoding import RNNTBeamSearch
-from asr.models import FastConformerRNNT
-from asr.modules.conformer import FastConformerEncoder
+from asr.models import StreamingFastConformerRNNT
+from asr.modules.conformer import StreamingFastConformer
 from asr.modules.frontend import LogMelSpectrogram, SpecAugment
 from asr.modules.rnnt import JointNetwork, PredictionNetwork
 from asr.streaming import AudioChunker, StreamingRecognizer
@@ -25,7 +25,7 @@ def test_streaming_recognizer_matches_complete_sequence_decoding() -> None:
         hidden_size=5,
         dropout_rate=0.0,
     )
-    model = FastConformerRNNT(
+    model = StreamingFastConformerRNNT(
         frontend=LogMelSpectrogram(sample_rate=16, n_fft=8, hop_length=4, n_mels=4),
         spec_augment=SpecAugment(
             num_frequency_masks=0,
@@ -33,7 +33,7 @@ def test_streaming_recognizer_matches_complete_sequence_decoding() -> None:
             num_time_masks=0,
             max_time_mask_width=0,
         ),
-        encoder=FastConformerEncoder(
+        encoder=StreamingFastConformer(
             input_size=4,
             hidden_size=8,
             num_heads=2,

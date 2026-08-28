@@ -1,8 +1,8 @@
 from omegaconf import DictConfig
 from transformers import PreTrainedTokenizerFast
 
-from asr.models import FastConformerRNNT
-from asr.modules.conformer import FastConformerEncoder
+from asr.models import StreamingFastConformerRNNT
+from asr.modules.conformer import StreamingFastConformer
 from asr.modules.frontend import LogMelSpectrogram, SpecAugment
 from asr.modules.rnnt import JointNetwork, PredictionNetwork
 
@@ -27,7 +27,7 @@ def validate_tokenizer(tokenizer: PreTrainedTokenizerFast, expected_vocab_size: 
     return blank_token_id
 
 
-def build_fast_conformer_rnnt(config: DictConfig, blank_token_id: int) -> FastConformerRNNT:
+def build_fast_conformer_rnnt(config: DictConfig, blank_token_id: int) -> StreamingFastConformerRNNT:
     """Build the LibriSpeech FastConformer RNN-T architecture from config."""
     frontend = LogMelSpectrogram(
         sample_rate=config.frontend.sample_rate,
@@ -43,7 +43,7 @@ def build_fast_conformer_rnnt(config: DictConfig, blank_token_id: int) -> FastCo
         num_time_masks=config.spec_augment.num_time_masks,
         max_time_mask_width=config.spec_augment.max_time_mask_width,
     )
-    encoder = FastConformerEncoder(
+    encoder = StreamingFastConformer(
         input_size=config.frontend.n_mels,
         hidden_size=config.model.encoder.hidden_size,
         num_heads=config.model.encoder.num_heads,
@@ -72,7 +72,7 @@ def build_fast_conformer_rnnt(config: DictConfig, blank_token_id: int) -> FastCo
         dropout_rate=config.model.joint_network.dropout_rate,
         bias=config.model.joint_network.bias,
     )
-    return FastConformerRNNT(
+    return StreamingFastConformerRNNT(
         frontend=frontend,
         spec_augment=spec_augment,
         encoder=encoder,

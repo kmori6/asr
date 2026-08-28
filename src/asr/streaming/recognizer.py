@@ -1,7 +1,7 @@
 import torch
 
 from asr.decoding import RNNTBeamSearch, RNNTBeamSearchResult
-from asr.models import FastConformerRNNT, FastConformerRNNTCache
+from asr.models import StreamingFastConformerRNNT, StreamingFastConformerRNNTCache
 from asr.streaming.audio_chunker import AudioChunker
 
 
@@ -10,7 +10,7 @@ class StreamingRecognizer:
 
     def __init__(
         self,
-        model: FastConformerRNNT,
+        model: StreamingFastConformerRNNT,
         searcher: RNNTBeamSearch,
         chunk_size: int,
         amp_dtype: torch.dtype | None = None,
@@ -43,7 +43,7 @@ class StreamingRecognizer:
 
         device = next(self.model.parameters()).device
         self.searcher.reset()
-        cache: FastConformerRNNTCache | None = None
+        cache: StreamingFastConformerRNNTCache | None = None
         result: RNNTBeamSearchResult | None = None
 
         for chunk in chunker.stream(waveform):

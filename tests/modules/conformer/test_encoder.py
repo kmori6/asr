@@ -1,11 +1,40 @@
 import torch
 
-from asr.modules.conformer import FastConformerEncoder
+from asr.modules.conformer import (
+    CausalFastConformerSubsampling,
+    ConformerBlock,
+    FastConformer,
+    FastConformerSubsampling,
+    StreamingConformerBlock,
+    StreamingFastConformer,
+)
 
 
-def test_fast_conformer_encoder_preserves_chunkwise_streaming_context() -> None:
+def test_fast_conformer_uses_non_streaming_modules() -> None:
+    encoder = FastConformer(
+        input_size=16,
+        hidden_size=8,
+        num_heads=2,
+        kernel_size=5,
+        num_blocks=2,
+        dropout_rate=0.0,
+        conv_channels=4,
+    ).eval()
+    features = torch.randn(2, 25, 16)
+    feature_lengths = torch.tensor([25, 17])
+
+    outputs, output_lengths = encoder(features, feature_lengths)
+
+    assert type(encoder.subsampling) is FastConformerSubsampling
+    assert all(type(block) is ConformerBlock for block in encoder.blocks)
+    assert outputs.shape == (2, 4, 8)
+    torch.testing.assert_close(output_lengths, torch.tensor([4, 3]))
+    torch.testing.assert_close(outputs[1, 3:], torch.zeros_like(outputs[1, 3:]))
+
+
+def test_streaming_fast_conformer_preserves_chunkwise_context() -> None:
     torch.manual_seed(0)
-    encoder = FastConformerEncoder(
+    encoder = StreamingFastConformer(
         input_size=16,
         hidden_size=8,
         num_heads=2,
@@ -16,6 +45,9 @@ def test_fast_conformer_encoder_preserves_chunkwise_streaming_context() -> None:
         max_chunk_size=4,
         conv_channels=4,
     ).eval()
+    assert isinstance(encoder, FastConformer)
+    assert isinstance(encoder.subsampling, CausalFastConformerSubsampling)
+    assert all(isinstance(block, StreamingConformerBlock) for block in encoder.blocks)
     features = torch.randn(2, 25, 16, requires_grad=True)
     feature_lengths = torch.tensor([25, 17])
 
@@ -53,9 +85,9 @@ def test_fast_conformer_encoder_preserves_chunkwise_streaming_context() -> None:
     assert len(cache.blocks) == 2
 
 
-def test_fast_conformer_encoder_uses_full_context_according_to_probability() -> None:
+def test_streaming_fast_conformer_uses_full_context_according_to_probability() -> None:
     torch.manual_seed(0)
-    encoder = FastConformerEncoder(
+    encoder = StreamingFastConformer(
         input_size=16,
         hidden_size=8,
         num_heads=2,

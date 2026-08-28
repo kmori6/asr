@@ -27,7 +27,7 @@ class FastConformerSubsamplingCache:
 
 
 @dataclass(frozen=True)
-class FastConformerEncoderCache:
+class FastConformerCache:
     """Subsampling, pending-chunk, and block states cached by the encoder."""
 
     subsampling: FastConformerSubsamplingCache | None

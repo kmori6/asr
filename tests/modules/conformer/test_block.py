@@ -1,16 +1,34 @@
 import torch
 
-from asr.modules.conformer import ConformerBlock
+from asr.modules.conformer import CausalConvolution, ConformerBlock, Convolution, StreamingConformerBlock
 
 
-def test_conformer_block_chunk_outputs_match_full_causal_output() -> None:
-    torch.manual_seed(0)
+def test_conformer_block_uses_non_causal_convolution() -> None:
     block = ConformerBlock(
         input_size=8,
         num_heads=2,
         kernel_size=5,
         dropout_rate=0.0,
+    ).eval()
+    inputs = torch.randn(2, 7, 8)
+    mask = torch.ones(2, 7, 7, dtype=torch.bool)
+
+    outputs = block(inputs, mask)
+
+    assert type(block.conv) is Convolution
+    assert outputs.shape == inputs.shape
+
+
+def test_streaming_conformer_block_chunk_outputs_match_full_causal_output() -> None:
+    torch.manual_seed(0)
+    block = StreamingConformerBlock(
+        input_size=8,
+        num_heads=2,
+        kernel_size=5,
+        dropout_rate=0.0,
     )
+    assert isinstance(block, ConformerBlock)
+    assert isinstance(block.conv, CausalConvolution)
     inputs = torch.randn(2, 7, 8, requires_grad=True)
     lengths = torch.tensor([7, 5])
     indices = torch.arange(inputs.shape[1])

@@ -13,7 +13,7 @@ from transformers import PreTrainedTokenizerFast
 
 from asr.data import SpeechTextDataset
 from asr.decoding import RNNTBeamSearch
-from asr.models import FastConformerRNNT
+from asr.models import StreamingFastConformerRNNT
 from asr.streaming import AudioChunker, StreamingRecognizer
 
 logger = getLogger(__name__)
@@ -29,7 +29,7 @@ def resolve_experiment_path(path: str) -> Path:
 @torch.inference_mode()
 def recognize_offline(
     waveform: torch.Tensor,
-    model: FastConformerRNNT,
+    model: StreamingFastConformerRNNT,
     searcher: RNNTBeamSearch,
     chunk_size: int,
     device: torch.device,
