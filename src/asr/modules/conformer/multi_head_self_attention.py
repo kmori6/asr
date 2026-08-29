@@ -57,7 +57,7 @@ class MultiHeadSelfAttention(nn.Module):
             torch.Tensor: Output tensor with the same shape as ``x``. A fully masked query
                 produces an all-zero output.
         """
-        output, _ = self._forward(x, mask, cache=None)
+        output, _ = self.forward_chunk(x, mask)
         return output
 
     def forward_chunk(
@@ -75,22 +75,6 @@ class MultiHeadSelfAttention(nn.Module):
         Returns:
             tuple[torch.Tensor, KVCache]: Current chunk outputs and the updated cache
                 containing all frames seen so far.
-        """
-        return self._forward(x, mask, cache)
-
-    def _forward(self, x: torch.Tensor, mask: torch.Tensor, cache: KVCache | None) -> tuple[torch.Tensor, KVCache]:
-        """
-
-        Args:
-            x (torch.Tensor): Current input with shape ``(batch, query_length, input_size)``.
-            mask (torch.Tensor): Boolean tensor with shape ``(batch, query_length, cached_length + query_length)``
-                where ``True`` marks an allowed query-key pair.
-            cache (KVCache | None): Projected keys and values from preceding chunks,
-                or ``None`` when processing a complete sequence or the first chunk.
-
-        Returns:
-            tuple[torch.Tensor, KVCache]: Current outputs with shape ``(batch, query_length, input_size)``
-                and the updated cache containing projected keys and values for all frames seen so far.
         """
         if x.ndim != 3:
             raise ValueError(f"x must have shape (batch, num_frames, input_size), but got {tuple(x.shape)}")
