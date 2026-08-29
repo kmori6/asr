@@ -1,21 +1,10 @@
-from dataclasses import dataclass
-
 import torch
 import torch.nn as nn
-from torch.nn.utils.rnn import pad_sequence
 from torchaudio.functional import melscale_fbanks
 
 
-@dataclass(frozen=True, slots=True)
-class LogMelSpectrogramCache:
-    """Unprocessed waveform samples retained across streaming chunks."""
-
-    waveforms: torch.Tensor
-    waveform_lengths: torch.Tensor
-
-
 class LogMelSpectrogram(nn.Module):
-    """Convert padded waveforms into streaming-compatible log-Mel features."""
+    """Convert waveforms into causal log-Mel features."""
 
     window: torch.Tensor
     mel_filters: torch.Tensor
@@ -83,77 +72,46 @@ class LogMelSpectrogram(nn.Module):
         return self._mask_invalid_frames(features, feature_lengths), feature_lengths
 
     def forward_chunk(
-        self, waveforms: torch.Tensor, waveform_lengths: torch.Tensor, cache: LogMelSpectrogramCache | None = None
-    ) -> tuple[torch.Tensor, torch.Tensor, LogMelSpectrogramCache]:
+        self,
+        waveforms: torch.Tensor,
+        cache: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
 
         Args:
-            waveforms (torch.Tensor): Next padded waveform chunk with shape ``(batch, num_chunk_samples)``.
-            waveform_lengths (torch.Tensor): Valid samples in the chunk with shape ``(batch,)``.
-            cache (LogMelSpectrogramCache | None, optional): Unprocessed samples returned by the preceding call for the
-                same utterances, or ``None`` for the first chunks.
+            waveforms (torch.Tensor): Next unpadded waveform chunk for one utterance with shape
+                ``(1, num_chunk_samples)``.
+            cache (torch.Tensor | None, optional): Samples retained from the preceding chunk
+                with shape ``(1, num_cached_samples)``, or ``None`` for the first chunk.
 
         Returns:
-            tuple[torch.Tensor, torch.Tensor, LogMelSpectrogramCache]:
-                Newly available log-Mel frames, their valid lengths, and the samples
-                beginning at the next uncomputed frame boundary.
-                Discard the cache after the final chunk of each utterance.
+            tuple[torch.Tensor, torch.Tensor]: Newly available log-Mel frames and the samples
+                beginning at the next STFT frame boundary. Discard the cache after the final chunk.
 
         Note:
             Only complete ``n_fft``-sample frames are emitted. The cache keeps
-            fewer than ``n_fft`` samples per utterance, so no frame is duplicated
-            or padded with samples that have not arrived yet.
+            fewer than ``n_fft`` samples, so no frame is duplicated or padded
+            with samples that have not arrived yet.
         """
-        self._validate_waveforms(waveforms, waveform_lengths)
-        if torch.any(waveform_lengths < 0) or torch.any(waveform_lengths > waveforms.shape[1]):
-            raise ValueError("waveform lengths must be between 0 and the padded chunk length")
-
-        if cache is None:
-            cached_waveforms = waveforms.new_empty((waveforms.shape[0], 0))
-            cached_lengths = waveform_lengths.new_zeros(waveforms.shape[0])
-        else:
+        self._validate_chunk(waveforms)
+        if cache is not None:
             self._validate_cache(cache, waveforms)
-            cached_waveforms = cache.waveforms
-            cached_lengths = cache.waveform_lengths
+        buffered_waveforms = waveforms if cache is None else torch.cat((cache, waveforms), dim=1)
 
-        combined_lengths = cached_lengths + waveform_lengths
-        combined_waveforms = pad_sequence(
-            [
-                torch.cat(
-                    (
-                        cached_waveforms[index, : cached_lengths[index]],
-                        waveforms[index, : waveform_lengths[index]],
-                    )
-                )
-                for index in range(waveforms.shape[0])
-            ],
-            batch_first=True,
-        )
-
-        if combined_waveforms.shape[1] < self.n_fft:
-            features = waveforms.new_empty((waveforms.shape[0], 0, self.n_mels), dtype=torch.float32)
-            feature_lengths = waveform_lengths.new_zeros(waveforms.shape[0])
+        if buffered_waveforms.shape[1] < self.n_fft:
+            features = waveforms.new_empty((1, 0, self.n_mels), dtype=torch.float32)
         else:
-            features = self._compute_features(combined_waveforms)
-            feature_lengths = self._feature_lengths(combined_lengths)
-            features = self._mask_invalid_frames(features, feature_lengths)
+            features = self._compute_features(buffered_waveforms)
 
-        consumed_samples = feature_lengths * self.hop_length
-        cached_sequences = [
-            combined_waveforms[index, consumed_samples[index] : combined_lengths[index]]
-            for index in range(waveforms.shape[0])
-        ]
-        next_cache = LogMelSpectrogramCache(
-            waveforms=pad_sequence(cached_sequences, batch_first=True),
-            waveform_lengths=combined_lengths - consumed_samples,
-        )
-        return features, feature_lengths, next_cache
+        consumed_samples = features.shape[1] * self.hop_length
+        next_cache = buffered_waveforms[:, consumed_samples:]
+        return features, next_cache
 
     def _compute_features(self, waveforms: torch.Tensor) -> torch.Tensor:
-        """Compute log-Mel features from padded waveforms without using future padding.
+        """Compute log-Mel features without using future samples.
 
         Args:
-            waveforms (torch.Tensor): Padded mono waveforms with shape ``(batch, num_samples)``.
+            waveforms (torch.Tensor): Batched mono waveforms with shape ``(batch, num_samples)``.
 
         Returns:
             torch.Tensor: Log-Mel features with shape ``(batch, num_frames, n_mels)``.
@@ -165,8 +123,8 @@ class LogMelSpectrogram(nn.Module):
             n_fft=self.n_fft,
             hop_length=self.hop_length,
             window=self.window.to(device=waveforms.device, dtype=waveforms.dtype),
-            center=False,
-            normalized=False,  # False for causal
+            center=False,  # Do not use future samples.
+            normalized=False,
             return_complex=True,
         )  # (batch_size, n_freqs = n_fft // 2 + 1, n_frames = (n_samples - n_fft) // hop_length + 1)
         power_spectrogram = spectrogram.abs().square().transpose(1, 2)  # (batch_size, n_frames, n_freqs)
@@ -226,18 +184,19 @@ class LogMelSpectrogram(nn.Module):
         if waveform_lengths.device != waveforms.device:
             raise ValueError("waveforms and waveform_lengths must be on the same device")
 
-    def _validate_cache(self, cache: LogMelSpectrogramCache, waveforms: torch.Tensor) -> None:
-        if cache.waveforms.ndim != 2 or cache.waveforms.shape[0] != waveforms.shape[0]:
-            raise ValueError("cached waveforms must have shape (batch, num_cached_samples)")
-        if cache.waveform_lengths.shape != (waveforms.shape[0],):
-            raise ValueError("cached waveform_lengths must have shape (batch,)")
-        if cache.waveform_lengths.dtype != torch.long:
-            raise TypeError("cached waveform_lengths must have dtype torch.long")
-        if cache.waveforms.device != waveforms.device or cache.waveform_lengths.device != waveforms.device:
+    @staticmethod
+    def _validate_chunk(waveforms: torch.Tensor) -> None:
+        if waveforms.ndim != 2 or waveforms.shape[0] != 1:
+            raise ValueError(
+                f"streaming waveforms must have shape (1, num_chunk_samples), but got {tuple(waveforms.shape)}"
+            )
+        if not waveforms.is_floating_point():
+            raise TypeError("streaming waveforms must be a floating-point tensor")
+
+    def _validate_cache(self, cache: torch.Tensor, waveforms: torch.Tensor) -> None:
+        if cache.ndim != 2 or cache.shape[0] != 1 or cache.shape[1] >= self.n_fft:
+            raise ValueError("cached waveforms must have shape (1, num_cached_samples) with fewer than n_fft samples")
+        if cache.device != waveforms.device:
             raise ValueError("waveform chunks and cache must be on the same device")
-        if cache.waveforms.dtype != waveforms.dtype:
+        if cache.dtype != waveforms.dtype:
             raise TypeError("waveform chunks and cached waveforms must have the same dtype")
-        if torch.any(cache.waveform_lengths < 0) or torch.any(cache.waveform_lengths >= self.n_fft):
-            raise ValueError("cached waveform lengths must be between 0 and n_fft - 1")
-        if torch.any(cache.waveform_lengths > cache.waveforms.shape[1]):
-            raise ValueError("cached waveform lengths must not exceed the padded cache length")

@@ -30,16 +30,12 @@ def test_log_mel_spectrogram_chunk_outputs_match_full_outputs() -> None:
     chunk_start = 0
     for chunk_length in (2, 7, 1, 9, 10):
         chunk = waveform[:, chunk_start : chunk_start + chunk_length]
-        features, feature_lengths, cache = frontend.forward_chunk(
-            chunk,
-            torch.tensor([chunk_length]),
-            cache,
-        )
-        chunk_features.append(features[:, : feature_lengths.item()])
+        features, cache = frontend.forward_chunk(chunk, cache)
+        chunk_features.append(features)
         chunk_start += chunk_length
 
     assert cache is not None
     streaming_features = torch.cat(chunk_features, dim=1)
     torch.testing.assert_close(streaming_features, full_features)
     assert streaming_features.shape[1] == full_lengths.item()
-    torch.testing.assert_close(cache.waveform_lengths, torch.tensor([5]))
+    assert cache.shape == (1, 5)

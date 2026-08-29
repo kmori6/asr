@@ -125,7 +125,6 @@ def test_streaming_fast_conformer_rnnt_computes_losses_and_matches_chunked_encod
     for index, chunk in enumerate(chunks):
         output, cache = model.encode_chunk(
             chunk,
-            torch.tensor([chunk.shape[1]]),
             cache=cache,
             chunk_size=2,
             is_final=index == len(chunks) - 1,

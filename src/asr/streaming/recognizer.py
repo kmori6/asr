@@ -48,7 +48,6 @@ class StreamingRecognizer:
 
         for chunk in chunker.stream(waveform):
             chunk_waveform = chunk.waveform.to(device=device).unsqueeze(0)
-            chunk_length = torch.tensor([chunk_waveform.shape[1]], dtype=torch.long, device=device)
             with torch.autocast(
                 device_type=device.type,
                 dtype=self.amp_dtype,
@@ -56,7 +55,6 @@ class StreamingRecognizer:
             ):
                 encoder_outputs, cache = self.model.encode_chunk(
                     chunk_waveform,
-                    chunk_length,
                     cache=cache,
                     chunk_size=self.chunk_size,
                     is_final=chunk.is_final,
