@@ -9,7 +9,14 @@ class FeedForward(nn.Module):
 
     """
 
-    def __init__(self, input_size: int, hidden_size: int, dropout_rate: float, bias: bool = True) -> None:
+    def __init__(
+        self,
+        input_size: int,
+        hidden_size: int,
+        dropout_rate: float,
+        activation: nn.Module = nn.ReLU(),
+        bias: bool = True,
+    ):
         super().__init__()
         if input_size <= 0:
             raise ValueError("input_size must be positive")
@@ -19,7 +26,7 @@ class FeedForward(nn.Module):
             raise ValueError("dropout_rate must satisfy 0 <= dropout_rate < 1")
 
         self.w_1 = nn.Linear(input_size, hidden_size, bias=bias)
-        self.activation = nn.SiLU()
+        self.activation = activation
         self.dropout = nn.Dropout(dropout_rate)
         self.w_2 = nn.Linear(hidden_size, input_size, bias=bias)
 
@@ -35,4 +42,5 @@ class FeedForward(nn.Module):
         x = self.w_1(x)
         x = self.activation(x)
         x = self.dropout(x)
-        return self.w_2(x)
+        x = self.w_2(x)
+        return x

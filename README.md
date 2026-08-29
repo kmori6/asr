@@ -33,6 +33,24 @@ uv run scripts/train_tokenizer.py \
 The preparation script writes `train.json`, `valid.json`, `test-clean.json`, `test-other.json`, and `train.txt` under
 `data/`. Generated data and results are not committed.
 
+## LibriSpeech language-modeling data preparation
+
+Download the normalized text from [OpenSLR SLR11](https://www.openslr.org/11/) and create reproducible training and
+validation splits:
+
+```bash
+cd experiments/librispeech
+
+bash scripts/download_librispeech_lm.sh data/lm
+
+uv run scripts/prepare_lm_dataset.py \
+  --input_path data/lm/librispeech-lm-norm.txt.gz \
+  --out_dir data/lm
+```
+
+This writes `data/lm/train.json` and `data/lm/valid.json`. Each record contains one normalized `text` field. LM
+training should load the existing tokenizer from `results/tokenizer`, so the ASR and LM token IDs remain identical.
+
 ## FastConformer RNN-T
 
 The LibriSpeech experiment provides separate non-streaming and streaming workflows. After preparing the manifests and

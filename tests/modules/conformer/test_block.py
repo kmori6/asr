@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 
 from asr.modules.conformer import CausalConvolution, ConformerBlock, Convolution, StreamingConformerBlock
 
@@ -16,6 +17,8 @@ def test_conformer_block_uses_non_causal_convolution() -> None:
     outputs = block(inputs, mask)
 
     assert type(block.conv) is Convolution
+    assert isinstance(block.ffn1.activation, nn.SiLU)
+    assert isinstance(block.ffn2.activation, nn.SiLU)
     assert outputs.shape == inputs.shape
 
 

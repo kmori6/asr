@@ -5,8 +5,8 @@ import torch.nn as nn
 
 from asr.modules.conformer.cache import ConformerBlockCache
 from asr.modules.conformer.convolution import CausalConvolution, Convolution
-from asr.modules.conformer.feed_forward import FeedForward
 from asr.modules.conformer.multi_head_self_attention import MultiHeadSelfAttention
+from asr.modules.transformer.feed_forward import FeedForward
 
 
 class ConformerBlock(nn.Module):
@@ -34,13 +34,13 @@ class ConformerBlock(nn.Module):
 
         hidden_size = input_size * feed_forward_expansion_factor
         self.ffn1_norm = nn.LayerNorm(input_size)
-        self.ffn1 = FeedForward(input_size, hidden_size, dropout_rate, bias=bias)
+        self.ffn1 = FeedForward(input_size, hidden_size, dropout_rate, activation=nn.SiLU(), bias=bias)
         self.mha_norm = nn.LayerNorm(input_size)
         self.mha = MultiHeadSelfAttention(input_size, num_heads, dropout_rate, bias=bias)
         self.conv_norm = nn.LayerNorm(input_size)
         self.conv = self._convolution_type(input_size, kernel_size, bias=bias)
         self.ffn2_norm = nn.LayerNorm(input_size)
-        self.ffn2 = FeedForward(input_size, hidden_size, dropout_rate, bias=bias)
+        self.ffn2 = FeedForward(input_size, hidden_size, dropout_rate, activation=nn.SiLU(), bias=bias)
         self.dropout = nn.Dropout(dropout_rate)
         self.final_norm = nn.LayerNorm(input_size)
 

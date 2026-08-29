@@ -8,7 +8,6 @@ from asr.modules.conformer.cache import (
 )
 from asr.modules.conformer.convolution import CausalConvolution, Convolution
 from asr.modules.conformer.encoder import FastConformer, StreamingFastConformer
-from asr.modules.conformer.feed_forward import FeedForward
 from asr.modules.conformer.multi_head_self_attention import MultiHeadSelfAttention
 from asr.modules.conformer.subsampling import CausalFastConformerSubsampling, FastConformerSubsampling
 
@@ -23,7 +22,6 @@ __all__ = [
     "FastConformerCache",
     "FastConformerSubsampling",
     "FastConformerSubsamplingCache",
-    "FeedForward",
     "KVCache",
     "MultiHeadSelfAttention",
     "StreamingConformerBlock",
