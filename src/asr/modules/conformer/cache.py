@@ -23,7 +23,7 @@ class ConformerBlockCache:
 class FastConformerSubsamplingCache:
     """Unconsumed convolution inputs cached by the subsampling stages."""
 
-    buffers: tuple[torch.Tensor, ...]  # Each is (batch, input_channels, 1 or 2, input_frequency).
+    buffers: tuple[torch.Tensor, ...]  # Each is (1, input_channels, 1 or 2, input_frequency).
 
 
 @dataclass(frozen=True)

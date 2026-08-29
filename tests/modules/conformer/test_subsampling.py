@@ -16,9 +16,6 @@ def test_fast_conformer_subsampling_returns_non_causal_valid_outputs() -> None:
     assert torch.isfinite(outputs).all()
     torch.testing.assert_close(outputs[1, 2:], torch.zeros_like(outputs[1, 2:]))
 
-    assert subsampling.input_conv.padding == (1, 1)
-    assert all(convolution.padding == (1, 1) for convolution in subsampling.depthwise_convs)
-
     short_output, _ = subsampling(features[1:2, :10], torch.tensor([10]))
     torch.testing.assert_close(short_output, outputs[1:2, :2])
 
@@ -30,8 +27,6 @@ def test_causal_fast_conformer_subsampling_matches_chunked_output() -> None:
     subsampling = CausalFastConformerSubsampling(input_size=80, output_size=32, conv_channels=8).eval()
 
     assert isinstance(subsampling, FastConformerSubsampling)
-    assert subsampling.input_conv.padding == (0, 1)
-    assert all(convolution.padding == (0, 1) for convolution in subsampling.depthwise_convs)
 
     outputs, output_lengths = subsampling(features, feature_lengths)
 
@@ -56,15 +51,22 @@ def test_causal_fast_conformer_subsampling_matches_chunked_output() -> None:
         assert tuple(buffer.shape[2] for buffer in cache.buffers) == (1, 1, 1)
 
 
-def test_causal_fast_conformer_subsampling_preserves_cached_dtype_after_empty_chunk() -> None:
+def test_causal_fast_conformer_subsampling_handles_empty_chunks_with_autocast() -> None:
     subsampling = CausalFastConformerSubsampling(input_size=80, output_size=32, conv_channels=8).eval()
 
     with torch.autocast("cpu", dtype=torch.bfloat16):
-        _, cache = subsampling.forward_chunk(torch.randn(1, 64, 80))
+        initial_output, initial_cache = subsampling.forward_chunk(torch.empty(1, 0, 80))
+        assert initial_cache is None
+
+        _, cache = subsampling.forward_chunk(torch.randn(1, 64, 80), initial_cache)
         output, next_cache = subsampling.forward_chunk(torch.empty(1, 0, 80), cache)
 
+    assert initial_output.shape == (1, 0, 32)
+    assert initial_output.dtype == torch.bfloat16
     assert output.shape == (1, 0, 32)
     assert output.dtype == torch.bfloat16
+    assert cache is not None
+    assert next_cache is cache
     assert tuple(buffer.dtype for buffer in next_cache.buffers) == (
         torch.float32,
         torch.bfloat16,

@@ -18,7 +18,7 @@ class FastConformerSubsampling(nn.Module):
     _NUM_STAGES = 3
     _KERNEL_SIZE = 3
     _STRIDE = 2
-    _CONV_PADDING: int | tuple[int, int] = 1
+    _CONV_PADDING = (1, 1)
 
     def __init__(self, input_size: int, output_size: int, conv_channels: int = 256) -> None:
         super().__init__()
@@ -73,14 +73,10 @@ class FastConformerSubsampling(nn.Module):
 
         stage_lengths = feature_lengths
         x = features.unsqueeze(1)  # (batch, 1, num_frames, input_size)
-        x = self._mask_invalid_frames(x, stage_lengths)
-
-        x = self.activation(self.input_conv(x))
+        x = self.activation(self.input_conv(self._prepare_stage_input(x, stage_lengths)))
         stage_lengths = self._subsample_once(stage_lengths)
         for depthwise_conv, pointwise_conv in zip(self.depthwise_convs, self.pointwise_convs, strict=True):
-            # Prevent padded activations from entering the valid right edge of the next non-causal convolution.
-            x = self._mask_invalid_frames(x, stage_lengths)
-            x = self.activation(pointwise_conv(depthwise_conv(x)))
+            x = self.activation(pointwise_conv(depthwise_conv(self._prepare_stage_input(x, stage_lengths))))
             stage_lengths = self._subsample_once(stage_lengths)
 
         x = self._project(x)
@@ -110,6 +106,10 @@ class FastConformerSubsampling(nn.Module):
         x = x.transpose(1, 2).reshape(batch_size, num_frames, channels * frequency_size)
         return self.output_projection(x)
 
+    def _prepare_stage_input(self, x: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
+        """Mask padding before a non-causal convolution can mix it into valid frames."""
+        return self._mask_invalid_frames(x, lengths)
+
     @staticmethod
     def _mask_invalid_frames(x: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
         frame_indices = torch.arange(x.shape[2], device=x.device)
@@ -127,59 +127,38 @@ class FastConformerSubsampling(nn.Module):
         """Apply one round of ``ceil(length / 2)``."""
         return torch.div(lengths + cls._STRIDE - 1, cls._STRIDE, rounding_mode="floor")
 
-    @classmethod
-    def _subsample_lengths(cls, lengths: torch.Tensor) -> torch.Tensor:
-        """Apply three rounds of ``ceil(length / 2)``."""
-        for _ in range(cls._NUM_STAGES):
-            lengths = cls._subsample_once(lengths)
-        return lengths
-
 
 class CausalFastConformerSubsampling(FastConformerSubsampling):
     """Apply a causal variant of Fast Conformer's 8x subsampling."""
 
     _CONV_PADDING = (0, 1)
 
-    def forward(self, features: torch.Tensor, feature_lengths: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-
-        Args:
-            features (torch.Tensor): Acoustic features with shape ``(batch, num_frames, input_size)``.
-            feature_lengths (torch.Tensor): Valid frame counts with shape ``(batch,)``.
-
-        Returns:
-            tuple[torch.Tensor, torch.Tensor]: Encoded features
-                with shape ``(batch, ceil(num_frames / 8), output_size)``
-                and valid lengths ``ceil(feature_lengths / 8)``. Invalid output frames are zero.
-        """
-        self._validate_inputs(features, feature_lengths)
-
-        x = features.unsqueeze(1)  # (batch, 1, num_frames, input_size)
-        x = self.activation(self.input_conv(self._pad_time(x)))
-        for depthwise_conv, pointwise_conv in zip(self.depthwise_convs, self.pointwise_convs, strict=True):
-            x = self.activation(pointwise_conv(depthwise_conv(self._pad_time(x))))
-
-        x = self._project(x)
-        output_lengths = self._subsample_lengths(feature_lengths)
-        x = self._mask_invalid_outputs(x, output_lengths)
-        return x, output_lengths
+    def _prepare_stage_input(self, x: torch.Tensor, _lengths: torch.Tensor) -> torch.Tensor:
+        return F.pad(x, (0, 0, self._KERNEL_SIZE - 1, 0))
 
     def forward_chunk(
         self, features: torch.Tensor, cache: FastConformerSubsamplingCache | None = None
-    ) -> tuple[torch.Tensor, FastConformerSubsamplingCache]:
+    ) -> tuple[torch.Tensor, FastConformerSubsamplingCache | None]:
         """
 
         Args:
-            features (torch.Tensor): Next unpadded acoustic-feature chunk with shape
-                ``(batch, num_frames, input_size)``. Every frame is treated as valid.
+            features (torch.Tensor): Next unpadded acoustic-feature chunk for one utterance
+                with shape ``(1, num_frames, input_size)``. Every frame is valid.
             cache (FastConformerSubsamplingCache | None, optional): States returned by the preceding call,
                 or ``None`` at the beginning of an utterance.
 
         Returns:
-            tuple[torch.Tensor, FastConformerSubsamplingCache]: Newly available subsampled frames and updated states
-                for all convolution stages. Concatenated outputs are equivalent to `forward` on the concatenated input.
+            tuple[torch.Tensor, FastConformerSubsamplingCache | None]: Newly available
+                subsampled frames and updated stage states. The cache remains ``None``
+                until at least one input frame arrives. Concatenated outputs are equivalent
+                to ``forward`` on the concatenated input.
         """
         self._validate_features(features)
+        if features.shape[0] != 1:
+            raise ValueError(f"streaming features must have batch size 1, but got {features.shape[0]}")
+        if features.shape[1] == 0:
+            projection_input = features.new_empty((1, 0, self.output_projection.in_features))
+            return self.output_projection(projection_input), cache
 
         buffers: tuple[torch.Tensor | None, ...]
         if cache is None:
@@ -233,10 +212,12 @@ class CausalFastConformerSubsampling(FastConformerSubsampling):
                 )
             if buffer.device != x.device:
                 raise ValueError("subsampling input and buffer must be on the same device")
+            if x.shape[2] == 0:
+                output_frequency = (x.shape[3] + self._STRIDE - 1) // self._STRIDE
+                output = x.new_empty((1, convolution.out_channels, 0, output_frequency))
+                return output, buffer
             if buffer.dtype != x.dtype:
-                if x.shape[2] > 0:
-                    raise ValueError("subsampling input and buffer must have the same dtype")
-                x = x.to(dtype=buffer.dtype)
+                raise ValueError("subsampling input and buffer must have the same dtype")
 
         convolution_input = torch.cat((buffer, x), dim=2)
         if convolution_input.shape[2] < self._KERNEL_SIZE:
@@ -250,8 +231,3 @@ class CausalFastConformerSubsampling(FastConformerSubsampling):
         if pointwise_convolution is not None and output.shape[2] > 0:
             output = pointwise_convolution(output)
         return self.activation(output), next_buffer
-
-    @classmethod
-    def _pad_time(cls, x: torch.Tensor) -> torch.Tensor:
-        """Left-pad the time axis for a causal kernel-size-three convolution."""
-        return F.pad(x, (0, 0, cls._KERNEL_SIZE - 1, 0))  # (batch, channels, 2 + num_frames, input_size)
