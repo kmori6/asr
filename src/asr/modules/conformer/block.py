@@ -101,8 +101,8 @@ class StreamingConformerBlock(ConformerBlock):
         convolution = cast(CausalConvolution, self.conv)
         convolution_output, next_convolution_cache = convolution.forward_chunk(
             self.conv_norm(x),
-            cache=convolution_cache,
-            mask=frame_mask,
+            frame_mask,
+            convolution_cache,
         )
         x = x + self.dropout(convolution_output)
         x = x + 0.5 * self.dropout(self.ffn2(self.ffn2_norm(x)))

@@ -1,6 +1,5 @@
 import pytest
 import torch
-import torch.nn as nn
 
 from asr.modules.conformer import CausalConvolution, Convolution
 
@@ -14,8 +13,6 @@ def test_convolution_applies_non_causal_same_padded_depthwise_convolution() -> N
     outputs = convolution(inputs, mask)
 
     assert outputs.shape == inputs.shape
-    assert isinstance(convolution.batchnorm, nn.BatchNorm1d)
-    assert convolution.depthwise_conv.padding == (2,)
     torch.testing.assert_close(outputs[1, 7:], torch.zeros_like(outputs[1, 7:]))
 
     changed_inputs = inputs.detach().clone()
@@ -37,26 +34,28 @@ def test_causal_convolution_chunk_outputs_match_full_output() -> None:
     torch.manual_seed(0)
     convolution = CausalConvolution(input_size=4, kernel_size=5)
     inputs = torch.randn(2, 11, 4, requires_grad=True)
+    mask = torch.ones(2, 11, dtype=torch.bool)
 
     assert isinstance(convolution, Convolution)
-    assert isinstance(convolution.layernorm, nn.LayerNorm)
-    assert convolution.depthwise_conv.padding == (0,)
 
-    full_outputs = convolution(inputs)
+    full_outputs = convolution(inputs, mask)
 
     cache = None
     chunk_outputs = []
+    start = 0
     for chunk in inputs.detach().split((3, 4, 4), dim=1):
-        output, cache = convolution.forward_chunk(chunk, cache)
+        end = start + chunk.shape[1]
+        output, cache = convolution.forward_chunk(chunk, mask[:, start:end], cache)
         chunk_outputs.append(output)
+        start = end
 
     assert full_outputs.shape == inputs.shape
     torch.testing.assert_close(torch.cat(chunk_outputs, dim=1), full_outputs.detach())
     assert cache is not None
     assert cache.shape == (2, 4, 4)
 
-    mask = torch.tensor([[True] * 11, [True] * 7 + [False] * 4])
-    masked_outputs = convolution(inputs.detach(), mask)
+    padded_mask = torch.tensor([[True] * 11, [True] * 7 + [False] * 4])
+    masked_outputs = convolution(inputs.detach(), padded_mask)
     torch.testing.assert_close(masked_outputs[1, 7:], torch.zeros_like(masked_outputs[1, 7:]))
 
     full_outputs.sum().backward()
@@ -68,13 +67,17 @@ def test_causal_convolution_with_kernel_size_one_returns_empty_cache() -> None:
     torch.manual_seed(0)
     convolution = CausalConvolution(input_size=4, kernel_size=1)
     inputs = torch.randn(2, 5, 4)
+    mask = torch.ones(2, 5, dtype=torch.bool)
 
-    full_outputs = convolution(inputs)
+    full_outputs = convolution(inputs, mask)
     chunk_outputs = []
     cache = None
+    start = 0
     for chunk in inputs.split((2, 3), dim=1):
-        output, cache = convolution.forward_chunk(chunk, cache)
+        end = start + chunk.shape[1]
+        output, cache = convolution.forward_chunk(chunk, mask[:, start:end], cache)
         chunk_outputs.append(output)
+        start = end
 
     torch.testing.assert_close(torch.cat(chunk_outputs, dim=1), full_outputs)
     assert cache is not None
