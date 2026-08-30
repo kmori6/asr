@@ -1,4 +1,8 @@
+from pathlib import Path
+
+import torch
 from omegaconf import DictConfig
+from safetensors.torch import load_file
 from transformers import PreTrainedTokenizerFast
 
 from asr.models import FastConformerRNNT, StreamingFastConformerRNNT
@@ -7,6 +11,18 @@ from asr.modules.frontend import LogMelSpectrogram, SpecAugment
 from asr.modules.rnnt import JointNetwork, PredictionNetwork
 
 BLANK_TOKEN = "[BLANK]"
+
+
+def load_model_weights(model: torch.nn.Module, model_path: Path, device: torch.device) -> None:
+    """Load a Transformers Trainer directory, safetensors file, or legacy PyTorch weights."""
+    weights_path = model_path / "model.safetensors" if model_path.is_dir() else model_path
+    if not weights_path.is_file():
+        raise FileNotFoundError(f"Model weights not found: {weights_path}")
+    if weights_path.suffix == ".safetensors":
+        state_dict = load_file(str(weights_path), device=str(device))
+    else:
+        state_dict = torch.load(weights_path, map_location=device, weights_only=True)
+    model.load_state_dict(state_dict)
 
 
 def validate_tokenizer(tokenizer: PreTrainedTokenizerFast, expected_vocab_size: int) -> int:

@@ -65,8 +65,9 @@ uv run scripts/infer_fast_conformer_rnnt.py \
   infer.input_path=/path/to/audio.wav
 ```
 
-The default configuration is `config/fast_conformer_rnnt.yaml`. Checkpoints, metric history, and loss plots are written
-to `results/fast_conformer_rnnt/`. Set `train.checkpoint_path` in the configuration to resume from a checkpoint.
+The default configuration is `config/fast_conformer_rnnt.yaml`. Transformers Trainer writes the best model,
+tokenizer, checkpoints, Trainer state, and train/validation loss metrics to `results/fast_conformer_rnnt/`. Set
+`train.checkpoint_path` to a checkpoint directory such as `results/fast_conformer_rnnt/checkpoint-1000` to resume.
 
 Train, evaluate, or run inference with the cache-aware streaming model:
 
@@ -77,10 +78,31 @@ uv run scripts/infer_streaming_fast_conformer_rnnt.py \
   infer.input_path=/path/to/audio.wav
 ```
 
-The streaming workflow uses `config/streaming_fast_conformer_rnnt.yaml` and writes checkpoints to
-`results/streaming_fast_conformer_rnnt/`. Evaluation writes references, hypotheses, predictions, and WER metrics to
-the model-specific evaluation directory. Inference prints the transcript and writes token IDs, the decoding score,
-timing, and mode-specific settings to JSON.
+The streaming workflow uses `config/streaming_fast_conformer_rnnt.yaml` and the same Transformers Trainer contract.
+Its model, tokenizer, checkpoints, state, and metrics are written to `results/streaming_fast_conformer_rnnt/`.
+Evaluation writes references, hypotheses, predictions, and WER metrics to the model-specific evaluation directory.
+Inference prints the transcript and writes token IDs, the decoding score, timing, and mode-specific settings to JSON.
+
+## FastConformer Transformer
+
+Train the FastConformer encoder with a Transformer Base autoregressive decoder, then evaluate or recognize an audio
+file with beam search:
+
+```bash
+uv run scripts/train_fast_conformer_transformer.py
+uv run scripts/evaluate_fast_conformer_transformer.py
+uv run scripts/infer_fast_conformer_transformer.py \
+  infer.input_path=/path/to/audio.wav
+```
+
+The default configuration is `config/fast_conformer_transformer.yaml`. Training uses the repository's own Trainer for
+20 epochs and writes the best model, checkpoints, metric history, and plots to `results/fast_conformer_transformer/`.
+The shared encoder is trained with the [joint CTC-attention objective](https://arxiv.org/abs/1609.06773), using
+`model.ctc_loss_weight` for the CTC term and `1 - model.ctc_loss_weight` for decoder cross entropy. CTC is an auxiliary
+training objective and is not included in beam-search scoring.
+Evaluation writes predictions and WER to `results/fast_conformer_transformer_evaluation/`, while inference writes
+detailed results to `results/fast_conformer_transformer_inference.json`. Beam search does not apply external
+language-model fusion.
 
 ## HuBERT CTC fine-tuning
 

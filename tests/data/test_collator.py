@@ -6,20 +6,26 @@ from tokenizers.processors import TemplateProcessing
 from torch.utils.data import DataLoader
 from transformers import PreTrainedTokenizerFast, Wav2Vec2FeatureExtractor, WhisperFeatureExtractor
 
-from asr.data import CTCCollator, EncoderDecoderCollator, RNNTCollator, SpeechTextSample
+from asr.data import CTCCollator, EncoderDecoderCollator, RNNTCollator, SpeechTextSample, WhisperCollator
 
 
 def create_tokenizer() -> PreTrainedTokenizerFast:
     backend_tokenizer = Tokenizer(
         WordLevel(
-            vocab={"[BLANK]": 0, "[UNK]": 1, "hello": 2, "world": 3},
+            vocab={"[BLANK]": 0, "[UNK]": 1, "hello": 2, "world": 3, "[BOS]": 4, "[EOS]": 5},
             unk_token="[UNK]",
         )
     )
     backend_tokenizer.pre_tokenizer = Whitespace()
+    backend_tokenizer.post_processor = TemplateProcessing(
+        single="[BOS] $A [EOS]",
+        special_tokens=[("[BOS]", 4), ("[EOS]", 5)],
+    )
     tokenizer = PreTrainedTokenizerFast(
         tokenizer_object=backend_tokenizer,
         unk_token="[UNK]",
+        bos_token="[BOS]",
+        eos_token="[EOS]",
         additional_special_tokens=["[BLANK]"],
     )
     return tokenizer
@@ -78,7 +84,7 @@ def test_ctc_collator_pads_inputs_and_masks_label_padding() -> None:
     torch.testing.assert_close(batch["labels"], torch.tensor([[2, 3], [2, -100]]))
 
 
-def test_encoder_decoder_collator_creates_whisper_inputs_and_labels() -> None:
+def test_whisper_collator_creates_inputs_and_labels() -> None:
     backend_tokenizer = Tokenizer(
         WordLevel(
             vocab={"[PAD]": 0, "[UNK]": 1, "[SOT]": 2, "[EOS]": 3, "hello": 4, "world": 5},
@@ -97,7 +103,7 @@ def test_encoder_decoder_collator_creates_whisper_inputs_and_labels() -> None:
         bos_token="[SOT]",
         eos_token="[EOS]",
     )
-    collator = EncoderDecoderCollator(
+    collator = WhisperCollator(
         feature_extractor=WhisperFeatureExtractor(sampling_rate=16_000),
         tokenizer=tokenizer,
         sample_rate=16_000,
@@ -110,3 +116,21 @@ def test_encoder_decoder_collator_creates_whisper_inputs_and_labels() -> None:
     assert batch["input_features"].shape == (2, 80, 3_000)
     assert batch["attention_mask"].shape == (2, 3_000)
     torch.testing.assert_close(batch["labels"], torch.tensor([[4, 5, 3], [4, 3, -100]]))
+
+
+def test_encoder_decoder_collator_shifts_and_pads_targets() -> None:
+    collator = EncoderDecoderCollator(
+        tokenizer=create_tokenizer(),
+        pad_token_id=0,
+        max_target_length=8,
+    )
+
+    batch = collator(create_samples())
+
+    torch.testing.assert_close(batch["waveforms"], torch.tensor([[0.1, 0.2, 0.3], [0.4, 0.5, 0.0]]))
+    torch.testing.assert_close(batch["waveform_lengths"], torch.tensor([3, 2]))
+    torch.testing.assert_close(batch["ctc_labels"], torch.tensor([[2, 3], [2, 0]]))
+    torch.testing.assert_close(batch["ctc_label_lengths"], torch.tensor([2, 1]))
+    torch.testing.assert_close(batch["decoder_input_ids"], torch.tensor([[4, 2, 3], [4, 2, 0]]))
+    torch.testing.assert_close(batch["decoder_attention_mask"], torch.tensor([[True, True, True], [True, True, False]]))
+    torch.testing.assert_close(batch["labels"], torch.tensor([[2, 3, 5], [2, 5, -100]]))

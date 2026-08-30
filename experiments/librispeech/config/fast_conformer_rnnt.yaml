@@ -59,34 +59,36 @@ train:
   # Keep disabled for the first run because the Numba RNN-T loss is an external
   # kernel. Enable only after verifying torch.compile on the target environment.
   compile: false
-  dataloader:
-    train_batch_size: 8
-    valid_batch_size: 8
-    num_workers: 2
-    pin_memory: true
-  optimizer:
-    lr: 1e-4
-    weight_decay: 1e-2
-    max_grad_norm: 1.0
-  scheduler:
-    warmup_steps: 1000
+  train_batch_size: 8
+  valid_batch_size: 8
   epochs: 20
   grad_accum_steps: 8
-  log_steps: 10
+  learning_rate: 1e-4
+  weight_decay: 1e-2
+  max_grad_norm: 1.0
+  lr_scheduler_type: linear
+  warmup_steps: 1000
+  logging_steps: 10
+  save_total_limit: 2
+  dataloader_num_workers: 2
+  dataloader_pin_memory: true
+  # auto uses BF16 when supported, otherwise FP16 on CUDA and FP32 on CPU.
+  # Explicit alternatives are bf16, fp16, and fp32.
+  mixed_precision: auto
   out_dir: results/fast_conformer_rnnt
-  # Set a checkpoint path to resume; null starts a new run.
+  # Set a Transformers checkpoint directory such as checkpoint-1000 to resume.
   checkpoint_path: null
 
 evaluate:
   test_file: ${dataset.test_clean_file}
-  model_path: ${train.out_dir}/best_model.pt
+  model_path: ${train.out_dir}
   out_dir: results/fast_conformer_rnnt_evaluation
   beam_size: 5
   # Set to a small positive value for a quick evaluation smoke test.
   max_samples: null
 
 infer:
-  model_path: ${train.out_dir}/best_model.pt
+  model_path: ${train.out_dir}
   # Set this from the command line to an arbitrary WAV, FLAC, or other audio
   # file supported by SoundFile. Multi-channel audio is downmixed and audio is
   # resampled to frontend.sample_rate.

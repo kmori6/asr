@@ -135,6 +135,93 @@ class CTCCollator:
 
 
 class EncoderDecoderCollator:
+    """Create CTC targets and shifted autoregressive targets for speech."""
+
+    def __init__(
+        self,
+        tokenizer: PreTrainedTokenizerFast,
+        pad_token_id: int,
+        max_target_length: int,
+        ignore_index: int = -100,
+    ) -> None:
+        if not 0 <= pad_token_id < len(tokenizer):
+            raise ValueError(f"pad_token_id must be in [0, {len(tokenizer)})")
+        if tokenizer.bos_token_id is None or tokenizer.eos_token_id is None:
+            raise ValueError("tokenizer must define BOS and EOS tokens")
+        if max_target_length <= 0:
+            raise ValueError("max_target_length must be positive")
+        self.tokenizer = tokenizer
+        self.pad_token_id = pad_token_id
+        self.max_target_length = max_target_length
+        self.ignore_index = ignore_index
+
+    def __call__(self, samples: list[SpeechTextSample]) -> dict[str, torch.Tensor]:
+        """Create a FastConformer-Transformer training batch."""
+        if not samples:
+            raise ValueError("samples must not be empty")
+
+        waveform_lengths = torch.tensor([sample.waveform.shape[0] for sample in samples], dtype=torch.long)
+        waveforms = pad_sequence(
+            [sample.waveform for sample in samples],
+            batch_first=True,
+            padding_value=0.0,
+        )
+        encoded = self.tokenizer(
+            [sample.text for sample in samples],
+            add_special_tokens=True,
+            padding=False,
+            truncation=False,
+            return_attention_mask=False,
+        )
+        token_ids = cast(list[list[int]], encoded["input_ids"])
+        bos_token_id = cast(int, self.tokenizer.bos_token_id)
+        eos_token_id = cast(int, self.tokenizer.eos_token_id)
+        if any(len(ids) < 2 or ids[0] != bos_token_id or ids[-1] != eos_token_id for ids in token_ids):
+            raise ValueError("Every target sequence must begin with BOS and end with EOS")
+
+        ctc_sequences = [torch.tensor(ids[1:-1], dtype=torch.long) for ids in token_ids]
+        ctc_label_lengths = torch.tensor([sequence.shape[0] for sequence in ctc_sequences], dtype=torch.long)
+        if torch.any(ctc_label_lengths == 0):
+            raise ValueError("Every CTC target sequence must contain at least one token")
+        ctc_labels = pad_sequence(
+            ctc_sequences,
+            batch_first=True,
+            padding_value=self.pad_token_id,
+        )
+
+        decoder_sequences = [torch.tensor(ids[:-1], dtype=torch.long) for ids in token_ids]
+        label_sequences = [torch.tensor(ids[1:], dtype=torch.long) for ids in token_ids]
+        target_lengths = torch.tensor([sequence.shape[0] for sequence in decoder_sequences], dtype=torch.long)
+        longest_target = int(target_lengths.max().item())
+        if longest_target > self.max_target_length:
+            raise ValueError(
+                f"Target sequences must not exceed {self.max_target_length} tokens, but got {longest_target}."
+            )
+
+        decoder_input_ids = pad_sequence(
+            decoder_sequences,
+            batch_first=True,
+            padding_value=self.pad_token_id,
+        )
+        labels = pad_sequence(
+            label_sequences,
+            batch_first=True,
+            padding_value=self.ignore_index,
+        )
+        positions = torch.arange(longest_target)
+        decoder_attention_mask = positions[None, :] < target_lengths[:, None]
+        return {
+            "waveforms": waveforms,
+            "waveform_lengths": waveform_lengths,
+            "ctc_labels": ctc_labels,
+            "ctc_label_lengths": ctc_label_lengths,
+            "decoder_input_ids": decoder_input_ids,
+            "decoder_attention_mask": decoder_attention_mask,
+            "labels": labels,
+        }
+
+
+class WhisperCollator:
     """Create padded Whisper inputs and autoregressive decoder labels.
 
     Audio is converted to fixed-length log-Mel features by Whisper's feature

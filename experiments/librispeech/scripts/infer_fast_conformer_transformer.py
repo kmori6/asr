@@ -6,13 +6,12 @@ from typing import cast
 
 import hydra
 import torch
-from fast_conformer_rnnt_factory import build_streaming_fast_conformer_rnnt, load_model_weights, validate_tokenizer
+from fast_conformer_transformer_factory import build_fast_conformer_transformer, validate_tokenizer
 from omegaconf import DictConfig
 from transformers import PreTrainedTokenizerFast
 
 from asr.data import load_audio
-from asr.decoding import RNNTBeamSearch
-from asr.streaming import AudioChunker, StreamingRecognizer
+from asr.decoding import EncoderDecoderBeamSearch
 
 logger = getLogger(__name__)
 EXPERIMENT_DIR = Path(__file__).resolve().parents[1]
@@ -24,7 +23,7 @@ def resolve_experiment_path(path: str) -> Path:
     return resolved_path if resolved_path.is_absolute() else EXPERIMENT_DIR / resolved_path
 
 
-@hydra.main(version_base=None, config_path="../config", config_name="streaming_fast_conformer_rnnt")
+@hydra.main(version_base=None, config_path="../config", config_name="fast_conformer_transformer")
 def main(config: DictConfig) -> None:
     if config.infer.input_path is None:
         raise ValueError("set infer.input_path to an audio file")
@@ -42,38 +41,27 @@ def main(config: DictConfig) -> None:
         torch.set_float32_matmul_precision("high")
     amp_dtype = torch.bfloat16 if device.type != "cuda" or torch.cuda.is_bf16_supported() else torch.float16
 
-    tokenizer = cast(
-        PreTrainedTokenizerFast,
-        PreTrainedTokenizerFast.from_pretrained(tokenizer_dir),
-    )
-    blank_token_id = validate_tokenizer(tokenizer, int(config.model.vocab_size))
-    model = build_streaming_fast_conformer_rnnt(config, blank_token_id).to(device)
-    load_model_weights(model, model_path, device)
+    tokenizer = cast(PreTrainedTokenizerFast, PreTrainedTokenizerFast.from_pretrained(tokenizer_dir))
+    blank_token_id, bos_token_id, eos_token_id = validate_tokenizer(tokenizer, config.model.vocab_size)
+    model = build_fast_conformer_transformer(config, blank_token_id=blank_token_id).to(device)
+    model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
     model.eval()
+    searcher = EncoderDecoderBeamSearch(model, bos_token_id, eos_token_id)
 
-    searcher = RNNTBeamSearch(
-        prediction_network=model.prediction_network,
-        joint_network=model.joint_network,
-        beam_width=int(config.infer.beam_size),
-        blank_token_id=blank_token_id,
-    )
     sample_rate = int(config.frontend.sample_rate)
     waveform = load_audio(input_path, sample_rate=sample_rate)
-
+    batched_waveform = waveform.to(device).unsqueeze(0)
+    waveform_length = torch.tensor([waveform.shape[0]], dtype=torch.long, device=device)
     start_time = time.perf_counter()
-    recognizer = StreamingRecognizer(
-        model=model,
-        searcher=searcher,
-        chunk_size=int(config.infer.chunk_size),
-        amp_dtype=amp_dtype,
-    )
-    result = recognizer.recognize(
-        waveform,
-        AudioChunker(
-            chunk_duration_ms=int(config.infer.audio_chunk_duration_ms),
-            sample_rate=sample_rate,
-        ),
-    )
+    with torch.inference_mode(), torch.autocast(device.type, dtype=amp_dtype, enabled=device.type == "cuda"):
+        encoder_outputs, encoder_attention_mask = model.encode(batched_waveform, waveform_length)
+        result = searcher.search(
+            encoder_outputs,
+            encoder_attention_mask,
+            beam_size=int(config.infer.beam_size),
+            max_new_tokens=int(config.infer.max_new_tokens),
+            length_penalty=float(config.infer.length_penalty),
+        )
     inference_seconds = time.perf_counter() - start_time
 
     transcript = cast(str, tokenizer.decode(result.token_ids, skip_special_tokens=True)).strip()
@@ -90,10 +78,9 @@ def main(config: DictConfig) -> None:
         "inference_seconds": inference_seconds,
         "real_time_factor": inference_seconds / audio_duration_seconds,
         "device": str(device),
-        "streaming": True,
         "beam_size": int(config.infer.beam_size),
-        "encoder_chunk_size": int(config.infer.chunk_size),
-        "audio_chunk_duration_ms": int(config.infer.audio_chunk_duration_ms),
+        "max_new_tokens": int(config.infer.max_new_tokens),
+        "length_penalty": float(config.infer.length_penalty),
     }
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", encoding="utf-8") as output_file:

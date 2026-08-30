@@ -15,7 +15,7 @@ from transformers import (
 )
 from whisper_factory import configure_whisper_generation
 
-from asr.data import EncoderDecoderCollator, SpeechTextDataset
+from asr.data import SpeechTextDataset, WhisperCollator
 
 logger = getLogger(__name__)
 EXPERIMENT_DIR = Path(__file__).resolve().parents[1]
@@ -91,7 +91,7 @@ def main(config: DictConfig) -> None:
     configure_whisper_generation(model, language, task)
     gradient_checkpointing = bool(config.train.gradient_checkpointing)
     model.config.use_cache = not gradient_checkpointing
-    collator = EncoderDecoderCollator(
+    collator = WhisperCollator(
         feature_extractor=feature_extractor,
         tokenizer=tokenizer,
         sample_rate=sample_rate,

@@ -5,7 +5,7 @@ from typing import cast
 
 import hydra
 import torch
-from fast_conformer_rnnt_factory import build_streaming_fast_conformer_rnnt, validate_tokenizer
+from fast_conformer_rnnt_factory import build_streaming_fast_conformer_rnnt, load_model_weights, validate_tokenizer
 from omegaconf import DictConfig
 from torchaudio.functional import edit_distance
 from tqdm import tqdm
@@ -69,8 +69,7 @@ def main(config: DictConfig) -> None:
     )
     blank_token_id = validate_tokenizer(tokenizer, config.model.vocab_size)
     model = build_streaming_fast_conformer_rnnt(config, blank_token_id).to(device)
-    state_dict = torch.load(model_path, map_location=device, weights_only=True)
-    model.load_state_dict(state_dict)
+    load_model_weights(model, model_path, device)
     model.eval()
 
     searcher = RNNTBeamSearch(
