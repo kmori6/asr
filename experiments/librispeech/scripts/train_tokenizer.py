@@ -6,12 +6,15 @@ from tokenizers.decoders import ByteLevel as ByteLevelDecoder
 from tokenizers.models import BPE
 from tokenizers.normalizers import NFKC, Lowercase, Replace, Sequence, Strip
 from tokenizers.pre_tokenizers import ByteLevel
+from tokenizers.processors import TemplateProcessing
 from tokenizers.trainers import BpeTrainer
 from transformers import PreTrainedTokenizerFast
 
 BLANK_TOKEN = "[BLANK]"
 UNK_TOKEN = "[UNK]"
-SPECIAL_TOKENS = [BLANK_TOKEN, UNK_TOKEN]
+BOS_TOKEN = "[BOS]"
+EOS_TOKEN = "[EOS]"
+SPECIAL_TOKENS = [BLANK_TOKEN, UNK_TOKEN, BOS_TOKEN, EOS_TOKEN]
 
 
 def main() -> None:
@@ -60,9 +63,7 @@ def main() -> None:
     # https://huggingface.co/docs/tokenizers/v0.22.2/api/decoders
     tokenizer.decoder = ByteLevelDecoder()
 
-    # vocab_size includes the observed alphabet and both special tokens. The
-    # trainer ensures [BLANK] and [UNK] are vocabulary entries even though they
-    # do not occur in train.txt.
+    # vocab_size includes the observed alphabet and all special tokens.
     # https://huggingface.co/docs/tokenizers/v0.22.2/api/trainers
     tokenizer.train(
         files=[str(text_path)],
@@ -72,12 +73,23 @@ def main() -> None:
         ),
     )
 
+    bos_token_id = tokenizer.token_to_id(BOS_TOKEN)
+    eos_token_id = tokenizer.token_to_id(EOS_TOKEN)
+    if bos_token_id is None or eos_token_id is None:
+        raise RuntimeError("Tokenizer training did not create BOS and EOS tokens")
+    tokenizer.post_processor = TemplateProcessing(
+        single=f"{BOS_TOKEN} $A {EOS_TOKEN}",
+        special_tokens=[(BOS_TOKEN, bos_token_id), (EOS_TOKEN, eos_token_id)],
+    )
+
     # Register [UNK] with its standard role and [BLANK] as an additional special
     # token so both survive save/load and can be excluded by skip_special_tokens.
     # https://huggingface.co/docs/transformers/v5.1.0/en/main_classes/tokenizer
     fast_tokenizer = PreTrainedTokenizerFast(
         tokenizer_object=tokenizer,
         unk_token=UNK_TOKEN,
+        bos_token=BOS_TOKEN,
+        eos_token=EOS_TOKEN,
         additional_special_tokens=[BLANK_TOKEN],
     )
     fast_tokenizer.save_pretrained(out_dir)

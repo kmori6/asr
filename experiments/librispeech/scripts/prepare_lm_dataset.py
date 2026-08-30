@@ -39,9 +39,6 @@ def main() -> None:
     counts = {"train": 0, "valid": 0}
 
     try:
-        for output_file in split_files.values():
-            output_file.write("[\n")
-
         with gzip.open(input_path, mode="rt", encoding="utf-8") as input_file:
             for line in tqdm(input_file, desc="Preparing LM data"):
                 text = normalize_text(line)
@@ -50,13 +47,8 @@ def main() -> None:
 
                 split = "valid" if random_generator.random() < args.valid_ratio else "train"
                 output_file = split_files[split]
-                if counts[split] > 0:
-                    output_file.write(",\n")
-                output_file.write(f"  {json.dumps({'text': text}, ensure_ascii=False)}")
+                output_file.write(f"{json.dumps({'text': text}, ensure_ascii=False)}\n")
                 counts[split] += 1
-
-        for output_file in split_files.values():
-            output_file.write("\n]\n")
     finally:
         for output_file in split_files.values():
             output_file.close()

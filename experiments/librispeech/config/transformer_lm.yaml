@@ -1,0 +1,71 @@
+# Relative paths are resolved from experiments/librispeech by the experiment scripts.
+dataset:
+  data_dir: data/lm
+  train_file: train.json
+  valid_file: valid.json
+  preprocessing_num_workers: 4
+
+tokenizer:
+  tokenizer_dir: results/tokenizer
+  expected_vocab_size: 128
+  blank_token: "[BLANK]"
+  bos_token: "[BOS]"
+  eos_token: "[EOS]"
+
+model:
+  vocab_size: 128
+  hidden_size: 256
+  num_heads: 4
+  num_layers: 4
+  feed_forward_size: 1024
+  dropout_rate: 0.1
+  max_length: 512
+  bias: false
+
+train:
+  seed: 42
+  out_dir: results/transformer_lm
+  checkpoint_path: null
+  epochs: 1
+  train_batch_size: 128
+  valid_batch_size: 128
+  grad_accum_steps: 4
+  learning_rate: 3e-4
+  weight_decay: 1e-2
+  max_grad_norm: 1.0
+  lr_scheduler_type: linear
+  warmup_steps: 1000
+  logging_steps: 100
+  save_total_limit: 2
+  dataloader_num_workers: 2
+  dataloader_pin_memory: true
+  compile: true
+  mixed_precision: auto
+
+evaluate:
+  model_path: ${train.out_dir}
+  out_dir: results/transformer_lm_evaluation
+  batch_size: 64
+  dataloader_num_workers: 2
+  mixed_precision: auto
+  max_samples: null
+
+hydra:
+  run:
+    dir: .
+  job:
+    chdir: false
+  output_subdir: null
+  job_logging:
+    version: 1
+    formatters:
+      simple:
+        format: "%(asctime)s - %(name)s - %(filename)s:%(lineno)d - %(levelname)s: %(message)s"
+    handlers:
+      console:
+        class: logging.StreamHandler
+        formatter: simple
+        stream: ext://sys.stdout
+    root:
+      handlers: [console]
+    disable_existing_loggers: false

@@ -48,8 +48,22 @@ uv run scripts/prepare_lm_dataset.py \
   --out_dir data/lm
 ```
 
-This writes `data/lm/train.json` and `data/lm/valid.json`. Each record contains one normalized `text` field. LM
-training should load the existing tokenizer from `results/tokenizer`, so the ASR and LM token IDs remain identical.
+This writes `data/lm/train.json` and `data/lm/valid.json` as JSON Lines. Each record contains one normalized `text`
+field. ASR and LM use the shared tokenizer created above. ASR tokenization omits `[BOS]` and `[EOS]`, while LM
+tokenization uses them as sentence boundaries.
+
+Train the causal Transformer LM and evaluate validation perplexity:
+
+```bash
+uv run scripts/train_transformer_lm.py
+
+uv run scripts/evaluate_transformer_lm.py
+```
+
+The default configuration is `config/transformer_lm.yaml`. Training writes the best model, tokenizer, Trainer state,
+metrics, and resolved configuration to `results/transformer_lm/`. Evaluation writes token-level validation loss and
+perplexity to `results/transformer_lm_evaluation/metrics.json`. The model's cached `predict` method is intended for
+future shallow-fusion and rescoring integration with the ASR decoders.
 
 ## FastConformer RNN-T
 

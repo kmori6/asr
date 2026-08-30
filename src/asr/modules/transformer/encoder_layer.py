@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 
+from asr.modules.transformer.cache import KVCache
 from asr.modules.transformer.multi_head_attention import MultiHeadAttention
 
 
@@ -41,3 +42,20 @@ class EncoderLayer(nn.Module):
         x = self.ffn_norm(x)
         x = residual + self.ffn_dropout(self.ffn(x))
         return x
+
+    def forward_with_cache(
+        self,
+        x: torch.Tensor,
+        mask: torch.Tensor,
+        cache: KVCache | None = None,
+    ) -> tuple[torch.Tensor, KVCache]:
+        """Apply the layer while extending its self-attention KV cache."""
+        residual = x
+        x = self.mha_norm(x)
+        attention, cache = self.mha.forward_with_cache(x, x, x, mask, cache)
+        x = residual + self.mha_dropout(attention)
+
+        residual = x
+        x = self.ffn_norm(x)
+        x = residual + self.ffn_dropout(self.ffn(x))
+        return x, cache
