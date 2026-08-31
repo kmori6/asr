@@ -1,30 +1,28 @@
 import json
 import time
 from logging import getLogger
-from pathlib import Path
 from typing import cast
 
 import hydra
 import torch
-from fast_conformer_rnnt_factory import build_streaming_fast_conformer_rnnt, load_model_weights, validate_tokenizer
 from omegaconf import DictConfig
+from train_streaming_fast_conformer_ctc import (
+    build_streaming_fast_conformer_ctc,
+    load_model_weights,
+    load_transformer_lm,
+    resolve_experiment_path,
+    validate_tokenizer,
+)
 from transformers import PreTrainedTokenizerFast
 
 from asr.data import load_audio
-from asr.decoding import RNNTBeamSearch
-from asr.streaming import AudioChunker, StreamingRNNTRecognizer
+from asr.decoding import CTCBeamSearch
+from asr.streaming import AudioChunker, StreamingCTCRecognizer
 
 logger = getLogger(__name__)
-EXPERIMENT_DIR = Path(__file__).resolve().parents[1]
 
 
-def resolve_experiment_path(path: str) -> Path:
-    """Resolve a config path relative to the LibriSpeech experiment directory."""
-    resolved_path = Path(path).expanduser()
-    return resolved_path if resolved_path.is_absolute() else EXPERIMENT_DIR / resolved_path
-
-
-@hydra.main(version_base=None, config_path="../config", config_name="streaming_fast_conformer_rnnt")
+@hydra.main(version_base=None, config_path="../config", config_name="streaming_fast_conformer_ctc")
 def main(config: DictConfig) -> None:
     if config.infer.input_path is None:
         raise ValueError("set infer.input_path to an audio file")
@@ -42,31 +40,37 @@ def main(config: DictConfig) -> None:
         torch.set_float32_matmul_precision("high")
     amp_dtype = torch.bfloat16 if device.type != "cuda" or torch.cuda.is_bf16_supported() else torch.float16
 
-    tokenizer = cast(
-        PreTrainedTokenizerFast,
-        PreTrainedTokenizerFast.from_pretrained(tokenizer_dir),
-    )
-    blank_token_id = validate_tokenizer(tokenizer, int(config.model.vocab_size))
-    model = build_streaming_fast_conformer_rnnt(config, blank_token_id).to(device)
+    tokenizer = cast(PreTrainedTokenizerFast, PreTrainedTokenizerFast.from_pretrained(tokenizer_dir))
+    blank_token_id, bos_token_id, eos_token_id = validate_tokenizer(tokenizer, int(config.model.vocab_size))
+    model = build_streaming_fast_conformer_ctc(config, blank_token_id).to(device)
     load_model_weights(model, model_path, device)
     model.eval()
 
-    searcher = RNNTBeamSearch(
-        prediction_network=model.prediction_network,
-        joint_network=model.joint_network,
+    language_model_weight = float(config.infer.language_model_weight)
+    if language_model_weight < 0.0:
+        raise ValueError("infer.language_model_weight must be non-negative")
+    language_model_path = resolve_experiment_path(str(config.language_model.model_path))
+    language_model = (
+        load_transformer_lm(language_model_path, tokenizer, device) if language_model_weight > 0.0 else None
+    )
+    searcher = CTCBeamSearch(
         beam_width=int(config.infer.beam_size),
         blank_token_id=blank_token_id,
+        language_model=language_model,
+        bos_token_id=bos_token_id,
+        eos_token_id=eos_token_id,
     )
+
     sample_rate = int(config.frontend.sample_rate)
     waveform = load_audio(input_path, sample_rate=sample_rate)
-
-    start_time = time.perf_counter()
-    recognizer = StreamingRNNTRecognizer(
+    recognizer = StreamingCTCRecognizer(
         model=model,
         searcher=searcher,
         chunk_size=int(config.infer.chunk_size),
+        language_model_weight=language_model_weight,
         amp_dtype=amp_dtype,
     )
+    start_time = time.perf_counter()
     result = recognizer.recognize(
         waveform,
         AudioChunker(
@@ -94,6 +98,8 @@ def main(config: DictConfig) -> None:
         "beam_size": int(config.infer.beam_size),
         "encoder_chunk_size": int(config.infer.chunk_size),
         "audio_chunk_duration_ms": int(config.infer.audio_chunk_duration_ms),
+        "language_model_weight": language_model_weight,
+        "language_model_path": str(language_model_path.resolve()) if language_model is not None else None,
     }
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", encoding="utf-8") as output_file:

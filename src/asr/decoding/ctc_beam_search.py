@@ -45,6 +45,16 @@ class _LanguageModelState:
     next_token_log_probabilities: tuple[float, ...]
 
 
+@dataclass(slots=True)
+class _SearchState:
+    beam: dict[tuple[int, ...], _PrefixScores]
+    language_model_states: dict[tuple[int, ...], _LanguageModelState]
+    vocab_size: int
+    excluded_token_ids: set[int]
+    device: torch.device
+    language_model_weight: float
+
+
 def _log_add(first: float, second: float) -> float:
     """Add two log-domain probabilities without leaving Python scalars."""
     if first == _LOG_ZERO:
@@ -91,6 +101,7 @@ class CTCBeamSearch:
         self.language_model = language_model
         self.bos_token_id = bos_token_id
         self.eos_token_id = eos_token_id
+        self._streaming_state: _SearchState | None = None
 
     @torch.inference_mode()
     def search(self, logits: torch.Tensor, language_model_weight: float = 0.0) -> CTCBeamSearchResult:
@@ -107,13 +118,41 @@ class CTCBeamSearch:
             The prefix maximizing the paper's final length-normalized score.
             ``score`` is its equivalent normalized log-score.
         """
+        state = self._initial_state(logits, language_model_weight)
+        frame_log_probabilities = torch.log_softmax(logits.float(), dim=-1).tolist()
+        self._advance(state, frame_log_probabilities)
+        return self._best_result(state.beam)
+
+    def reset(self) -> None:
+        """Clear prefix and language-model states from streaming decoding."""
+        self._streaming_state = None
+
+    @torch.inference_mode()
+    def search_chunk(self, logits: torch.Tensor, language_model_weight: float = 0.0) -> CTCBeamSearchResult:
+        """Decode the next frame-logit chunk while retaining prefix and LM states."""
+        if self._streaming_state is None:
+            self._streaming_state = self._initial_state(logits, language_model_weight)
+        else:
+            self._validate_logits(logits)
+            state = self._streaming_state
+            if logits.shape[1] != state.vocab_size:
+                raise ValueError("vocab_size must remain fixed while decoding one utterance")
+            if logits.device != state.device:
+                raise ValueError("logit chunks must remain on the same device while decoding one utterance")
+            if language_model_weight != state.language_model_weight:
+                raise ValueError("language_model_weight must remain fixed while decoding one utterance")
+
+        frame_log_probabilities = torch.log_softmax(logits.float(), dim=-1).tolist()
+        self._advance(self._streaming_state, frame_log_probabilities)
+        return self._best_result(self._streaming_state.beam)
+
+    def _initial_state(self, logits: torch.Tensor, language_model_weight: float) -> _SearchState:
         self._validate_logits(logits)
         if language_model_weight < 0.0:
             raise ValueError("language_model_weight must be non-negative")
         if language_model_weight > 0.0 and self.language_model is None:
             raise ValueError("language_model must be provided when language_model_weight is positive")
 
-        frame_log_probabilities = torch.log_softmax(logits.float(), dim=-1).tolist()
         vocab_size = logits.shape[1]
         excluded_token_ids = {self.blank_token_id}
         if self.bos_token_id is not None:
@@ -123,7 +162,6 @@ class CTCBeamSearch:
         if not label_token_ids:
             raise ValueError("the vocabulary must contain at least one non-special CTC label")
 
-        beam: dict[tuple[int, ...], _PrefixScores] = {(): _PrefixScores(blank=0.0, non_blank=_LOG_ZERO)}
         language_model_states: dict[tuple[int, ...], _LanguageModelState] = {}
         if language_model_weight > 0.0:
             assert self.bos_token_id is not None
@@ -135,30 +173,41 @@ class CTCBeamSearch:
                 device=logits.device,
             )
 
+        return _SearchState(
+            beam={(): _PrefixScores(blank=0.0, non_blank=_LOG_ZERO)},
+            language_model_states=language_model_states,
+            vocab_size=vocab_size,
+            excluded_token_ids=excluded_token_ids,
+            device=logits.device,
+            language_model_weight=language_model_weight,
+        )
+
+    def _advance(self, state: _SearchState, frame_log_probabilities: list[list[float]]) -> None:
+        label_token_ids = [token_id for token_id in range(state.vocab_size) if token_id not in state.excluded_token_ids]
         for frame_log_probs in frame_log_probabilities:
             retained = dict(
                 sorted(
-                    beam.items(),
+                    state.beam.items(),
                     key=lambda item: (-item[1].total, item[0]),
                 )[: self.beam_width]
             )
-            if language_model_states:
-                previous_language_model_states = language_model_states
-                language_model_states = {}
+            if state.language_model_states:
+                previous_language_model_states = state.language_model_states
+                state.language_model_states = {}
                 for prefix in retained:
-                    state = previous_language_model_states.get(prefix)
-                    if state is None:
+                    language_model_state = previous_language_model_states.get(prefix)
+                    if language_model_state is None:
                         parent_state = previous_language_model_states.get(prefix[:-1])
                         if parent_state is None:
                             raise RuntimeError("retained CTC prefix has no language-model parent state")
-                        state = self._predict_language_model(
+                        language_model_state = self._predict_language_model(
                             prefix[-1],
                             cache=parent_state.cache,
-                            vocab_size=vocab_size,
-                            excluded_token_ids=excluded_token_ids,
-                            device=logits.device,
+                            vocab_size=state.vocab_size,
+                            excluded_token_ids=state.excluded_token_ids,
+                            device=state.device,
                         )
-                    language_model_states[prefix] = state
+                    state.language_model_states[prefix] = language_model_state
 
             next_blank: dict[tuple[int, ...], float] = {}
             next_non_blank: dict[tuple[int, ...], float] = {}
@@ -179,15 +228,15 @@ class CTCBeamSearch:
                         token_id,
                         prefix_scores,
                         frame_log_probs[token_id],
-                        language_model_states.get(prefix),
-                        language_model_weight,
+                        state.language_model_states.get(prefix),
+                        state.language_model_weight,
                     )
                     next_non_blank[extended_prefix] = _log_add(
                         next_non_blank.get(extended_prefix, _LOG_ZERO),
                         extension_log_probability,
                     )
 
-            beam = {
+            state.beam = {
                 prefix: _PrefixScores(
                     blank=next_blank.get(prefix, _LOG_ZERO),
                     non_blank=next_non_blank.get(prefix, _LOG_ZERO),
@@ -195,6 +244,7 @@ class CTCBeamSearch:
                 for prefix in next_blank.keys() | next_non_blank.keys()
             }
 
+    def _best_result(self, beam: dict[tuple[int, ...], _PrefixScores]) -> CTCBeamSearchResult:
         best_prefix, best_scores = min(
             beam.items(),
             key=lambda item: (-self._normalized_score(item[0], item[1]), item[0]),

@@ -15,7 +15,7 @@ from transformers import (
     Wav2Vec2Processor,
 )
 
-from asr.data import CTCCollator, SpeechTextDataset
+from asr.data import HubertCTCCollator, SpeechTextDataset
 
 logger = getLogger(__name__)
 EXPERIMENT_DIR = Path(__file__).resolve().parents[1]
@@ -84,7 +84,7 @@ def main(config: DictConfig) -> None:
             f"but dataset.sample_rate is {sample_rate}."
         )
     processor = Wav2Vec2Processor(feature_extractor=feature_extractor, tokenizer=tokenizer)
-    collator = CTCCollator(feature_extractor, tokenizer, sample_rate=sample_rate)
+    collator = HubertCTCCollator(feature_extractor, tokenizer, sample_rate=sample_rate)
 
     model = HubertForCTC.from_pretrained(
         pretrained_model_name_or_path,

@@ -1,0 +1,102 @@
+# Relative paths are resolved from experiments/librispeech by the experiment scripts.
+dataset:
+  data_dir: data
+  train_file: train.json
+  valid_file: valid.json
+  test_clean_file: test-clean.json
+  test_other_file: test-other.json
+
+tokenizer:
+  tokenizer_dir: results/tokenizer
+
+language_model:
+  model_path: results/transformer_lm
+
+frontend:
+  sample_rate: 16000
+  n_fft: 512
+  hop_length: 160
+  n_mels: 80
+  f_min: 0.0
+  f_max: 8000.0
+
+spec_augment:
+  num_frequency_masks: 2
+  max_frequency_mask_width: 30
+  num_time_masks: 2
+  max_time_mask_width: 40
+
+model:
+  vocab_size: 128
+
+  encoder:
+    hidden_size: 512
+    num_heads: 8
+    kernel_size: 31
+    num_blocks: 12
+    dropout_rate: 0.1
+    conv_channels: 256
+    feed_forward_expansion_factor: 4
+    bias: true
+    min_chunk_size: 8
+    max_chunk_size: 32
+    streaming_mask_probability: 0.6
+
+train:
+  seed: 42
+  compile: false
+  train_batch_size: 16
+  valid_batch_size: 16
+  epochs: 20
+  grad_accum_steps: 4
+  learning_rate: 1e-4
+  weight_decay: 1e-2
+  max_grad_norm: 1.0
+  lr_scheduler_type: linear
+  warmup_steps: 1000
+  logging_steps: 10
+  save_total_limit: 2
+  dataloader_num_workers: 2
+  dataloader_pin_memory: true
+  mixed_precision: auto
+  out_dir: results/streaming_fast_conformer_ctc
+  checkpoint_path: null
+
+evaluate:
+  test_file: ${dataset.test_clean_file}
+  model_path: ${train.out_dir}
+  out_dir: results/streaming_fast_conformer_ctc_evaluation
+  beam_size: 5
+  audio_chunk_duration_ms: 640
+  chunk_size: 8
+  language_model_weight: 0.2
+  max_samples: null
+
+infer:
+  model_path: ${train.out_dir}
+  input_path: null
+  out_path: results/streaming_fast_conformer_ctc_inference.json
+  beam_size: 5
+  audio_chunk_duration_ms: 640
+  chunk_size: 8
+  language_model_weight: 0.2
+
+hydra:
+  run:
+    dir: .
+  job:
+    chdir: false
+  output_subdir: null
+  job_logging:
+    version: 1
+    formatters:
+      simple:
+        format: "%(asctime)s - %(name)s - %(filename)s:%(lineno)d - %(levelname)s: %(message)s"
+    handlers:
+      console:
+        class: logging.StreamHandler
+        formatter: simple
+        stream: ext://sys.stdout
+    root:
+      handlers: [console]
+    disable_existing_loggers: false

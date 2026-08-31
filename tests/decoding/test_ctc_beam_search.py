@@ -179,6 +179,59 @@ def test_ctc_beam_search_excludes_bos_and_eos_from_ctc_labels() -> None:
     assert result.token_ids == [1]
 
 
+def test_ctc_beam_search_chunked_decoding_matches_complete_logits() -> None:
+    logits = torch.log(
+        torch.tensor(
+            [
+                [0.10, 0.65, 0.25],
+                [0.50, 0.35, 0.15],
+                [0.10, 0.55, 0.35],
+            ]
+        )
+    )
+    searcher = CTCBeamSearch(beam_width=32, blank_token_id=0)
+    expected = searcher.search(logits)
+
+    searcher.reset()
+    searcher.search_chunk(logits[:1])
+    result = searcher.search_chunk(logits[1:])
+
+    assert result.token_ids == expected.token_ids
+    assert result.score == approx(expected.score)
+
+
+def test_ctc_beam_search_chunked_lm_fusion_matches_complete_logits() -> None:
+    logits = torch.log(
+        torch.tensor(
+            [
+                [0.10, 0.60, 0.30, 1e-5, 1e-5],
+                [0.50, 0.20, 0.30, 1e-5, 1e-5],
+                [0.10, 0.60, 0.30, 1e-5, 1e-5],
+            ]
+        )
+    )
+    expected = CTCBeamSearch(
+        beam_width=32,
+        blank_token_id=0,
+        language_model=_FakeLanguageModel(),
+        bos_token_id=3,
+        eos_token_id=4,
+    ).search(logits, language_model_weight=0.5)
+    searcher = CTCBeamSearch(
+        beam_width=32,
+        blank_token_id=0,
+        language_model=_FakeLanguageModel(),
+        bos_token_id=3,
+        eos_token_id=4,
+    )
+
+    searcher.search_chunk(logits[:2], language_model_weight=0.5)
+    result = searcher.search_chunk(logits[2:], language_model_weight=0.5)
+
+    assert result.token_ids == expected.token_ids
+    assert result.score == approx(expected.score)
+
+
 def test_ctc_beam_search_emits_repeated_label_only_across_blank() -> None:
     logits = torch.log(
         torch.tensor(

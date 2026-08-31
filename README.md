@@ -8,7 +8,7 @@ dataset-specific workflows live under `experiments/`.
 - Frontend
   - Log-mel spectrogram
   - SpecAugment
-- CTC
+- CTC (full-context and streaming)
 - RNN-T (full-context and streaming)
 - Encoder-decoder
 - Decoding support

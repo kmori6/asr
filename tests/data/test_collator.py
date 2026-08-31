@@ -6,7 +6,14 @@ from tokenizers.processors import TemplateProcessing
 from torch.utils.data import DataLoader
 from transformers import PreTrainedTokenizerFast, Wav2Vec2FeatureExtractor, WhisperFeatureExtractor
 
-from asr.data import CTCCollator, EncoderDecoderCollator, RNNTCollator, SpeechTextSample, WhisperCollator
+from asr.data import (
+    CTCCollator,
+    EncoderDecoderCollator,
+    HubertCTCCollator,
+    RNNTCollator,
+    SpeechTextSample,
+    WhisperCollator,
+)
 
 
 def create_tokenizer() -> PreTrainedTokenizerFast:
@@ -67,7 +74,16 @@ def test_rnnt_collator_with_dataloader() -> None:
     torch.testing.assert_close(batch["label_lengths"], torch.tensor([2, 1]))
 
 
-def test_ctc_collator_pads_inputs_and_masks_label_padding() -> None:
+def test_ctc_collator_omits_sentence_boundary_tokens() -> None:
+    batch = CTCCollator(create_tokenizer(), blank_token_id=0)(create_samples())
+
+    torch.testing.assert_close(batch["waveforms"], torch.tensor([[0.1, 0.2, 0.3], [0.4, 0.5, 0.0]]))
+    torch.testing.assert_close(batch["waveform_lengths"], torch.tensor([3, 2]))
+    torch.testing.assert_close(batch["labels"], torch.tensor([[2, 3], [2, 0]]))
+    torch.testing.assert_close(batch["label_lengths"], torch.tensor([2, 1]))
+
+
+def test_hubert_ctc_collator_pads_inputs_and_masks_label_padding() -> None:
     tokenizer = create_tokenizer()
     tokenizer.pad_token = "[BLANK]"
     feature_extractor = Wav2Vec2FeatureExtractor(
@@ -75,7 +91,7 @@ def test_ctc_collator_pads_inputs_and_masks_label_padding() -> None:
         do_normalize=False,
         return_attention_mask=True,
     )
-    collator = CTCCollator(feature_extractor, tokenizer, sample_rate=16_000)
+    collator = HubertCTCCollator(feature_extractor, tokenizer, sample_rate=16_000)
 
     batch = collator(create_samples())
 

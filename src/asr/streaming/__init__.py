@@ -1,4 +1,4 @@
 from asr.streaming.audio_chunker import AudioChunk, AudioChunker
-from asr.streaming.recognizer import StreamingRecognizer
+from asr.streaming.recognizer import StreamingCTCRecognizer, StreamingRNNTRecognizer
 
-__all__ = ["AudioChunk", "AudioChunker", "StreamingRecognizer"]
+__all__ = ["AudioChunk", "AudioChunker", "StreamingCTCRecognizer", "StreamingRNNTRecognizer"]

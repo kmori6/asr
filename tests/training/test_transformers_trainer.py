@@ -5,13 +5,13 @@ import torch
 from torch.utils.data import Dataset
 from transformers import Trainer, TrainingArguments
 
-from asr.models import FastConformerRNNT, StreamingFastConformerRNNT
+from asr.models import FastConformerRNNT, StreamingFastConformerCTC, StreamingFastConformerRNNT
 from asr.modules.conformer import FastConformer, StreamingFastConformer
 from asr.modules.frontend import LogMelSpectrogram, SpecAugment
 from asr.modules.rnnt import JointNetwork, PredictionNetwork
 
 
-class _RNNTDataset(Dataset[dict[str, torch.Tensor]]):
+class _ASRDataset(Dataset[dict[str, torch.Tensor]]):
     def __init__(self) -> None:
         self.sample = {
             "waveforms": torch.randn(256),
@@ -31,7 +31,7 @@ def _collate(samples: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
     return {name: torch.stack([sample[name] for sample in samples]) for name in samples[0]}
 
 
-def _create_model(streaming: bool) -> FastConformerRNNT:
+def _create_rnnt_model(streaming: bool) -> FastConformerRNNT:
     encoder: FastConformer
     model_type: type[FastConformerRNNT]
     if streaming:
@@ -83,11 +83,36 @@ def _create_model(streaming: bool) -> FastConformerRNNT:
     )
 
 
-def _run_trainer_smoke(tmp_path: Path, streaming: bool) -> None:
-    dataset = _RNNTDataset()
-    output_dir = tmp_path / ("streaming" if streaming else "full_context")
+def _create_streaming_ctc_model() -> StreamingFastConformerCTC:
+    return StreamingFastConformerCTC(
+        frontend=LogMelSpectrogram(n_fft=16, hop_length=8, n_mels=4),
+        spec_augment=SpecAugment(0, 0, 0, 0),
+        encoder=StreamingFastConformer(
+            input_size=4,
+            hidden_size=8,
+            num_heads=2,
+            kernel_size=5,
+            num_blocks=1,
+            dropout_rate=0.0,
+            min_chunk_size=2,
+            max_chunk_size=2,
+            streaming_mask_probability=1.0,
+            conv_channels=4,
+        ),
+        vocab_size=8,
+        blank_token_id=0,
+    )
+
+
+def _run_trainer_smoke(
+    tmp_path: Path,
+    model: FastConformerRNNT | StreamingFastConformerCTC,
+    output_name: str,
+) -> None:
+    dataset = _ASRDataset()
+    output_dir = tmp_path / output_name
     trainer = Trainer(
-        model=_create_model(streaming),
+        model=model,
         args=TrainingArguments(
             output_dir=str(output_dir),
             max_steps=1,
@@ -120,8 +145,12 @@ def _run_trainer_smoke(tmp_path: Path, streaming: bool) -> None:
 
 
 def test_transformers_trainer_accepts_full_context_rnnt_loss_mapping(tmp_path: Path) -> None:
-    _run_trainer_smoke(tmp_path, streaming=False)
+    _run_trainer_smoke(tmp_path, _create_rnnt_model(streaming=False), "full_context_rnnt")
 
 
 def test_transformers_trainer_accepts_streaming_rnnt_loss_mapping(tmp_path: Path) -> None:
-    _run_trainer_smoke(tmp_path, streaming=True)
+    _run_trainer_smoke(tmp_path, _create_rnnt_model(streaming=True), "streaming_rnnt")
+
+
+def test_transformers_trainer_accepts_streaming_ctc_loss_mapping(tmp_path: Path) -> None:
+    _run_trainer_smoke(tmp_path, _create_streaming_ctc_model(), "streaming_ctc")

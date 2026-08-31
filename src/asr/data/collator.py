@@ -69,7 +69,51 @@ class RNNTCollator:
 
 
 class CTCCollator:
-    """Dynamically pad raw speech and token labels for CTC training.
+    """Create padded waveform and token targets for CTC models."""
+
+    def __init__(self, tokenizer: PreTrainedTokenizerFast, blank_token_id: int) -> None:
+        if not 0 <= blank_token_id < len(tokenizer):
+            raise ValueError(f"blank_token_id must be in [0, {len(tokenizer)}), but got {blank_token_id}")
+
+        self.tokenizer = tokenizer
+        self.blank_token_id = blank_token_id
+
+    def __call__(self, samples: list[SpeechTextSample]) -> dict[str, torch.Tensor]:
+        """Collate speech-recognition samples without adding BOS or EOS."""
+        if not samples:
+            raise ValueError("samples must not be empty")
+
+        waveform_lengths = torch.tensor([sample.waveform.shape[0] for sample in samples], dtype=torch.long)
+        waveforms = pad_sequence(
+            [sample.waveform for sample in samples],
+            batch_first=True,
+            padding_value=0.0,
+        )
+        encoded = self.tokenizer(
+            [sample.text for sample in samples],
+            add_special_tokens=False,
+            padding=False,
+            truncation=False,
+            return_attention_mask=False,
+        )
+        token_ids = cast(list[list[int]], encoded["input_ids"])
+        label_sequences = [torch.tensor(ids, dtype=torch.long) for ids in token_ids]
+        label_lengths = torch.tensor([label.shape[0] for label in label_sequences], dtype=torch.long)
+        labels = pad_sequence(
+            label_sequences,
+            batch_first=True,
+            padding_value=self.blank_token_id,
+        )
+        return {
+            "waveforms": waveforms,
+            "waveform_lengths": waveform_lengths,
+            "labels": labels,
+            "label_lengths": label_lengths,
+        }
+
+
+class HubertCTCCollator:
+    """Create padded HuBERT inputs and token labels for CTC training.
 
     The feature extractor controls whether an input ``attention_mask`` is
     returned. Label padding is always replaced by ``-100``, which Transformers

@@ -83,6 +83,23 @@ Its model, tokenizer, checkpoints, state, and metrics are written to `results/st
 Evaluation writes references, hypotheses, predictions, and WER metrics to the model-specific evaluation directory.
 Inference prints the transcript and writes token IDs, the decoding score, timing, and mode-specific settings to JSON.
 
+## Streaming FastConformer CTC
+
+Train, evaluate, or run inference with the cache-aware streaming CTC model:
+
+```bash
+uv run scripts/train_streaming_fast_conformer_ctc.py
+uv run scripts/evaluate_streaming_fast_conformer_ctc.py
+uv run scripts/infer_streaming_fast_conformer_ctc.py \
+  infer.input_path=/path/to/audio.wav
+```
+
+The workflow uses `config/streaming_fast_conformer_ctc.yaml` and Transformers Trainer. Training uses the same encoder,
+chunk sampling, optimizer, scheduler, and batch settings as streaming RNN-T. Evaluation and inference preserve the
+frontend, encoder, CTC prefix-search, and language-model caches across audio chunks. The causal Transformer LM in
+`results/transformer_lm/` is used for shallow fusion by default; set `evaluate.language_model_weight=0` or
+`infer.language_model_weight=0` to decode without loading it.
+
 ## FastConformer Transformer
 
 Train the FastConformer encoder with a Transformer Base autoregressive decoder, then evaluate or recognize an audio
