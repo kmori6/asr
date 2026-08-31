@@ -101,8 +101,10 @@ The shared encoder is trained with the [joint CTC-attention objective](https://a
 `model.ctc_loss_weight` for the CTC term and `1 - model.ctc_loss_weight` for decoder cross entropy. CTC is an auxiliary
 training objective and is not included in beam-search scoring.
 Evaluation writes predictions and WER to `results/fast_conformer_transformer_evaluation/`, while inference writes
-detailed results to `results/fast_conformer_transformer_inference.json`. Beam search does not apply external
-language-model fusion.
+detailed results to `results/fast_conformer_transformer_inference.json`. Beam search uses shallow fusion with the
+causal Transformer LM in `results/transformer_lm/`: each token score adds `language_model_weight` times the LM log
+probability to the encoder-decoder log probability. The default weight is `0.2`; set
+`evaluate.language_model_weight=0` or `infer.language_model_weight=0` to decode without loading the LM.
 
 ## HuBERT CTC fine-tuning
 

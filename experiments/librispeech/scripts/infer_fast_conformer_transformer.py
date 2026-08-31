@@ -6,7 +6,11 @@ from typing import cast
 
 import hydra
 import torch
-from fast_conformer_transformer_factory import build_fast_conformer_transformer, validate_tokenizer
+from fast_conformer_transformer_factory import (
+    build_fast_conformer_transformer,
+    load_transformer_lm,
+    validate_tokenizer,
+)
 from omegaconf import DictConfig
 from transformers import PreTrainedTokenizerFast
 
@@ -46,7 +50,19 @@ def main(config: DictConfig) -> None:
     model = build_fast_conformer_transformer(config, blank_token_id=blank_token_id).to(device)
     model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
     model.eval()
-    searcher = EncoderDecoderBeamSearch(model, bos_token_id, eos_token_id)
+    language_model_weight = float(config.infer.language_model_weight)
+    if language_model_weight < 0.0:
+        raise ValueError("infer.language_model_weight must be non-negative")
+    language_model_path = resolve_experiment_path(str(config.language_model.model_path))
+    language_model = (
+        load_transformer_lm(language_model_path, tokenizer, device) if language_model_weight > 0.0 else None
+    )
+    searcher = EncoderDecoderBeamSearch(
+        model,
+        bos_token_id,
+        eos_token_id,
+        language_model=language_model,
+    )
 
     sample_rate = int(config.frontend.sample_rate)
     waveform = load_audio(input_path, sample_rate=sample_rate)
@@ -61,6 +77,7 @@ def main(config: DictConfig) -> None:
             beam_size=int(config.infer.beam_size),
             max_new_tokens=int(config.infer.max_new_tokens),
             length_penalty=float(config.infer.length_penalty),
+            language_model_weight=language_model_weight,
         )
     inference_seconds = time.perf_counter() - start_time
 
@@ -81,6 +98,8 @@ def main(config: DictConfig) -> None:
         "beam_size": int(config.infer.beam_size),
         "max_new_tokens": int(config.infer.max_new_tokens),
         "length_penalty": float(config.infer.length_penalty),
+        "language_model_weight": language_model_weight,
+        "language_model_path": str(language_model_path.resolve()) if language_model is not None else None,
     }
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", encoding="utf-8") as output_file:

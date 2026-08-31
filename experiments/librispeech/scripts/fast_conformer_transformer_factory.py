@@ -1,9 +1,12 @@
+from pathlib import Path
 from typing import cast
 
-from omegaconf import DictConfig
+import torch
+from omegaconf import DictConfig, OmegaConf
+from safetensors.torch import load_file
 from transformers import PreTrainedTokenizerFast
 
-from asr.models import FastConformerTransformer
+from asr.models import FastConformerTransformer, TransformerLM
 from asr.modules.conformer import FastConformer
 from asr.modules.frontend import LogMelSpectrogram, SpecAugment
 
@@ -75,3 +78,50 @@ def build_fast_conformer_transformer(config: DictConfig, blank_token_id: int) ->
         ignore_index=config.model.decoder.ignore_index,
         bias=config.model.decoder.bias,
     )
+
+
+def load_transformer_lm(
+    model_dir: Path,
+    tokenizer: PreTrainedTokenizerFast,
+    device: torch.device,
+) -> TransformerLM:
+    """Load the Transformer LM and verify its tokenizer matches the ASR tokenizer."""
+    weights_path = model_dir / "model.safetensors"
+    config_path = model_dir / "config.yaml"
+    for required_path in (weights_path, config_path):
+        if not required_path.is_file():
+            raise FileNotFoundError(f"Required language-model file not found: {required_path}")
+
+    language_model_tokenizer = cast(
+        PreTrainedTokenizerFast,
+        PreTrainedTokenizerFast.from_pretrained(model_dir),
+    )
+    if language_model_tokenizer.get_vocab() != tokenizer.get_vocab():
+        raise ValueError("Language-model and ASR tokenizers must have the same vocabulary and token IDs")
+    language_model_special_ids = (
+        language_model_tokenizer.pad_token_id,
+        language_model_tokenizer.bos_token_id,
+        language_model_tokenizer.eos_token_id,
+    )
+    asr_special_ids = (tokenizer.pad_token_id, tokenizer.bos_token_id, tokenizer.eos_token_id)
+    if language_model_special_ids != asr_special_ids:
+        raise ValueError("Language-model and ASR tokenizers must use the same PAD, BOS, and EOS token IDs")
+
+    saved_config = cast(DictConfig, OmegaConf.load(config_path))
+    model_config = saved_config.model
+    if int(model_config.vocab_size) != len(tokenizer):
+        raise ValueError("Language-model vocabulary size must match the ASR tokenizer")
+    language_model = TransformerLM(
+        vocab_size=int(model_config.vocab_size),
+        hidden_size=int(model_config.hidden_size),
+        num_heads=int(model_config.num_heads),
+        num_layers=int(model_config.num_layers),
+        feed_forward_size=int(model_config.feed_forward_size),
+        dropout_rate=float(model_config.dropout_rate),
+        max_length=int(model_config.max_length),
+        bias=bool(model_config.bias),
+    )
+    language_model.load_state_dict(load_file(weights_path))
+    language_model.to(device)
+    language_model.eval()
+    return language_model

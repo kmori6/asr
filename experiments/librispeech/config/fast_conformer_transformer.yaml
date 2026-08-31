@@ -9,6 +9,9 @@ dataset:
 tokenizer:
   tokenizer_dir: results/tokenizer
 
+language_model:
+  model_path: results/transformer_lm
+
 frontend:
   sample_rate: 16000
   n_fft: 512
@@ -80,6 +83,8 @@ evaluate:
   beam_size: 5
   max_new_tokens: 256
   length_penalty: 0.6
+  # Set to 0 to disable shallow fusion and skip loading the language model.
+  language_model_weight: 0.2
   max_samples: null
 
 infer:
@@ -89,6 +94,7 @@ infer:
   beam_size: 5
   max_new_tokens: 256
   length_penalty: 0.6
+  language_model_weight: 0.2
 
 hydra:
   run:

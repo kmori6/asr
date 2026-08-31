@@ -3,6 +3,7 @@ from typing import Protocol
 
 import torch
 
+from asr.models.transformer_lm import TransformerLMCache
 from asr.modules.transformer.cache import DecoderLayerCache, KVCache
 
 
@@ -30,6 +31,16 @@ class EncoderDecoderBeamSearchModel(Protocol):
     ) -> tuple[torch.Tensor, list[DecoderLayerCache]]: ...
 
 
+class EncoderDecoderLanguageModel(Protocol):
+    """Causal language-model operation required for shallow fusion."""
+
+    def predict(
+        self,
+        input_ids: torch.Tensor,
+        cache: TransformerLMCache | None = None,
+    ) -> tuple[torch.Tensor, TransformerLMCache]: ...
+
+
 class EncoderDecoderBeamSearch:
     """Batched beam search for an autoregressive encoder-decoder model."""
 
@@ -38,6 +49,7 @@ class EncoderDecoderBeamSearch:
         model: EncoderDecoderBeamSearchModel,
         bos_token_id: int,
         eos_token_id: int,
+        language_model: EncoderDecoderLanguageModel | None = None,
     ) -> None:
         if bos_token_id < 0 or eos_token_id < 0:
             raise ValueError("bos_token_id and eos_token_id must be non-negative")
@@ -46,6 +58,7 @@ class EncoderDecoderBeamSearch:
         self.model = model
         self.bos_token_id = bos_token_id
         self.eos_token_id = eos_token_id
+        self.language_model = language_model
 
     @staticmethod
     def _length_penalty(generated_length: int, alpha: float) -> float:
@@ -73,6 +86,22 @@ class EncoderDecoderBeamSearch:
             for cache in caches
         ]
 
+    @staticmethod
+    def _select_language_model_cache(
+        cache: TransformerLMCache,
+        parent_indices: torch.Tensor,
+    ) -> TransformerLMCache:
+        """Select and reorder the language-model cache by active parent beam."""
+        return TransformerLMCache(
+            layers=tuple(
+                KVCache(
+                    key=layer.key.index_select(0, parent_indices),
+                    value=layer.value.index_select(0, parent_indices),
+                )
+                for layer in cache.layers
+            )
+        )
+
     @torch.inference_mode()
     def search(
         self,
@@ -81,10 +110,13 @@ class EncoderDecoderBeamSearch:
         beam_size: int,
         max_new_tokens: int,
         length_penalty: float,
+        language_model_weight: float = 0.0,
     ) -> EncoderDecoderBeamSearchResult:
-        """Decode one encoded utterance.
+        """Decode one encoded utterance, optionally using language-model shallow fusion.
 
-        The returned sequence includes BOS and includes EOS when decoding completed.
+        The returned sequence includes BOS and includes EOS when decoding completed. The score
+        combines autoregressive decoder and weighted language-model log probabilities before
+        applying the length penalty.
         """
         if beam_size < 1:
             raise ValueError("beam_size must be positive")
@@ -92,6 +124,10 @@ class EncoderDecoderBeamSearch:
             raise ValueError("max_new_tokens must be positive")
         if length_penalty < 0.0:
             raise ValueError("length_penalty must be non-negative")
+        if language_model_weight < 0.0:
+            raise ValueError("language_model_weight must be non-negative")
+        if language_model_weight > 0.0 and self.language_model is None:
+            raise ValueError("language_model must be provided when language_model_weight is positive")
         if encoder_outputs.ndim != 3 or encoder_outputs.shape[0] != 1:
             raise ValueError("encoder_outputs must have shape (1, source_length, hidden_size)")
         expected_mask_shape = (1, encoder_outputs.shape[1])
@@ -113,6 +149,7 @@ class EncoderDecoderBeamSearch:
         alive_token_ids[0, 0] = self.bos_token_id
         alive_log_probs = torch.zeros(1, dtype=torch.float32, device=device)
         alive_caches: list[DecoderLayerCache] = []
+        alive_language_model_cache: TransformerLMCache | None = None
 
         finished_token_ids = torch.full(
             (beam_size, sequence_capacity),
@@ -142,7 +179,25 @@ class EncoderDecoderBeamSearch:
                 raise ValueError("BOS and EOS token IDs must be valid vocabulary indices")
             logits[:, self.bos_token_id] = -torch.inf
 
-            candidate_log_probs = torch.log_softmax(logits, dim=-1) + alive_log_probs[:, None]
+            step_log_probs = torch.log_softmax(logits, dim=-1)
+            step_language_model_cache = None
+            if language_model_weight > 0.0:
+                assert self.language_model is not None
+                language_model_logits, step_language_model_cache = self.language_model.predict(
+                    last_token_ids,
+                    alive_language_model_cache,
+                )
+                language_model_logits = language_model_logits[:, -1, :].float()
+                if language_model_logits.shape != logits.shape:
+                    raise ValueError("language-model logits must match decoder logits")
+                if language_model_logits.device != logits.device:
+                    raise ValueError("language-model and decoder logits must be on the same device")
+                step_log_probs = step_log_probs + language_model_weight * torch.log_softmax(
+                    language_model_logits,
+                    dim=-1,
+                )
+
+            candidate_log_probs = step_log_probs + alive_log_probs[:, None]
             generated_length = position + 1
             penalty = self._length_penalty(generated_length, length_penalty)
             flat_candidate_scores = (candidate_log_probs / penalty).flatten()
@@ -171,6 +226,11 @@ class EncoderDecoderBeamSearch:
             alive_log_probs = top_log_probs.index_select(0, alive_indices)
             alive_parents = parent_indices.index_select(0, alive_indices)
             alive_caches = self._select_caches(step_caches, alive_parents)
+            if step_language_model_cache is not None:
+                alive_language_model_cache = self._select_language_model_cache(
+                    step_language_model_cache,
+                    alive_parents,
+                )
 
             best_finished_score = finished_scores[0]
             best_alive_upper_bound = alive_log_probs.max() / self._length_penalty(max_new_tokens, length_penalty)

@@ -1,7 +1,9 @@
+import pytest
 import torch
 from pytest import approx
 
 from asr.decoding import EncoderDecoderBeamSearch, EncoderDecoderBeamSearchResult
+from asr.models import TransformerLMCache
 from asr.modules.transformer.cache import DecoderLayerCache, KVCache
 
 
@@ -56,6 +58,33 @@ class _FakeModel:
         return logits
 
 
+class _FakeLanguageModel:
+    def __init__(self) -> None:
+        self.batch_sizes: list[int] = []
+        self.cache_batch_sizes: list[int] = []
+
+    def predict(
+        self,
+        input_ids: torch.Tensor,
+        cache: TransformerLMCache | None = None,
+    ) -> tuple[torch.Tensor, TransformerLMCache]:
+        batch_size = input_ids.shape[0]
+        self.batch_sizes.append(batch_size)
+        new_value = input_ids.float()[:, None, :, None]
+        if cache is None:
+            key = new_value
+            position = 0
+        else:
+            self.cache_batch_sizes.append(cache.layers[0].key.shape[0])
+            key = torch.cat((cache.layers[0].key, new_value), dim=2)
+            position = cache.layers[0].key.shape[2]
+
+        logits = torch.zeros(batch_size, 1, 4, device=input_ids.device)
+        if position == 0:
+            logits[:, :, 2] = 2.0
+        return logits, TransformerLMCache(layers=(KVCache(key=key, value=key),))
+
+
 def test_encoder_decoder_beam_search_batches_beams_and_reorders_caches() -> None:
     model = _FakeModel()
     searcher = EncoderDecoderBeamSearch(model, bos_token_id=0, eos_token_id=3)
@@ -78,3 +107,36 @@ def test_encoder_decoder_beam_search_batches_beams_and_reorders_caches() -> None
 def test_encoder_decoder_beam_search_uses_gnmt_length_penalty() -> None:
     assert EncoderDecoderBeamSearch._length_penalty(1, 0.6) == approx(1.0)
     assert EncoderDecoderBeamSearch._length_penalty(7, 0.6) == approx(2.0**0.6)
+
+
+def test_encoder_decoder_beam_search_applies_lm_shallow_fusion_and_reorders_cache() -> None:
+    model = _FakeModel()
+    language_model = _FakeLanguageModel()
+    searcher = EncoderDecoderBeamSearch(model, bos_token_id=0, eos_token_id=3, language_model=language_model)
+
+    result = searcher.search(
+        encoder_outputs=torch.zeros(1, 2, 4),
+        encoder_attention_mask=torch.tensor([[True, False]]),
+        beam_size=2,
+        max_new_tokens=4,
+        length_penalty=0.6,
+        language_model_weight=1.0,
+    )
+
+    assert result.token_ids == [0, 2, 2, 3]
+    assert language_model.batch_sizes == [1, 2, 2]
+    assert language_model.cache_batch_sizes == [2, 2]
+
+
+def test_encoder_decoder_beam_search_requires_lm_for_positive_weight() -> None:
+    searcher = EncoderDecoderBeamSearch(_FakeModel(), bos_token_id=0, eos_token_id=3)
+
+    with pytest.raises(ValueError, match="language_model must be provided"):
+        searcher.search(
+            encoder_outputs=torch.zeros(1, 2, 4),
+            encoder_attention_mask=torch.tensor([[True, False]]),
+            beam_size=2,
+            max_new_tokens=4,
+            length_penalty=0.6,
+            language_model_weight=0.2,
+        )

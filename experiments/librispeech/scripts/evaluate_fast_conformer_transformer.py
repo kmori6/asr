@@ -5,7 +5,11 @@ from typing import cast
 
 import hydra
 import torch
-from fast_conformer_transformer_factory import build_fast_conformer_transformer, validate_tokenizer
+from fast_conformer_transformer_factory import (
+    build_fast_conformer_transformer,
+    load_transformer_lm,
+    validate_tokenizer,
+)
 from omegaconf import DictConfig
 from torchaudio.functional import edit_distance
 from tqdm import tqdm
@@ -33,6 +37,7 @@ def recognize(
     beam_size: int,
     max_new_tokens: int,
     length_penalty: float,
+    language_model_weight: float,
     device: torch.device,
     amp_dtype: torch.dtype,
 ) -> EncoderDecoderBeamSearchResult:
@@ -47,6 +52,7 @@ def recognize(
             beam_size=beam_size,
             max_new_tokens=max_new_tokens,
             length_penalty=length_penalty,
+            language_model_weight=language_model_weight,
         )
 
 
@@ -90,7 +96,19 @@ def main(config: DictConfig) -> None:
     model = build_fast_conformer_transformer(config, blank_token_id=blank_token_id).to(device)
     model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
     model.eval()
-    searcher = EncoderDecoderBeamSearch(model, bos_token_id, eos_token_id)
+    language_model_weight = float(config.evaluate.language_model_weight)
+    if language_model_weight < 0.0:
+        raise ValueError("evaluate.language_model_weight must be non-negative")
+    language_model_path = resolve_experiment_path(str(config.language_model.model_path))
+    language_model = (
+        load_transformer_lm(language_model_path, tokenizer, device) if language_model_weight > 0.0 else None
+    )
+    searcher = EncoderDecoderBeamSearch(
+        model,
+        bos_token_id,
+        eos_token_id,
+        language_model=language_model,
+    )
 
     hypotheses: list[str] = []
     references: list[str] = []
@@ -108,6 +126,7 @@ def main(config: DictConfig) -> None:
                 beam_size=int(config.evaluate.beam_size),
                 max_new_tokens=int(config.evaluate.max_new_tokens),
                 length_penalty=float(config.evaluate.length_penalty),
+                language_model_weight=language_model_weight,
                 device=device,
                 amp_dtype=amp_dtype,
             )
@@ -137,6 +156,8 @@ def main(config: DictConfig) -> None:
         "beam_size": int(config.evaluate.beam_size),
         "max_new_tokens": int(config.evaluate.max_new_tokens),
         "length_penalty": float(config.evaluate.length_penalty),
+        "language_model_weight": language_model_weight,
+        "language_model_path": str(language_model_path) if language_model is not None else None,
     }
     with (out_dir / "metrics.json").open("w", encoding="utf-8") as metrics_file:
         json.dump(metrics, metrics_file, ensure_ascii=False, indent=2)
