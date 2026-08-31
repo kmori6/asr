@@ -83,6 +83,8 @@ evaluate:
   beam_size: 5
   max_new_tokens: 256
   length_penalty: 0.6
+  # Tune independently from model.ctc_loss_weight; set to 0 for attention-only decoding.
+  ctc_weight: 0.3
   # Set to 0 to disable shallow fusion and skip loading the language model.
   language_model_weight: 0.2
   max_samples: null
@@ -94,6 +96,7 @@ infer:
   beam_size: 5
   max_new_tokens: 256
   length_penalty: 0.6
+  ctc_weight: 0.3
   language_model_weight: 0.2
 
 hydra:

@@ -50,6 +50,9 @@ def main(config: DictConfig) -> None:
     model = build_fast_conformer_transformer(config, blank_token_id=blank_token_id).to(device)
     model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
     model.eval()
+    ctc_weight = float(config.infer.ctc_weight)
+    if not 0.0 <= ctc_weight <= 1.0:
+        raise ValueError("infer.ctc_weight must be in [0, 1]")
     language_model_weight = float(config.infer.language_model_weight)
     if language_model_weight < 0.0:
         raise ValueError("infer.language_model_weight must be non-negative")
@@ -77,6 +80,7 @@ def main(config: DictConfig) -> None:
             beam_size=int(config.infer.beam_size),
             max_new_tokens=int(config.infer.max_new_tokens),
             length_penalty=float(config.infer.length_penalty),
+            ctc_weight=ctc_weight,
             language_model_weight=language_model_weight,
         )
     inference_seconds = time.perf_counter() - start_time
@@ -98,6 +102,7 @@ def main(config: DictConfig) -> None:
         "beam_size": int(config.infer.beam_size),
         "max_new_tokens": int(config.infer.max_new_tokens),
         "length_penalty": float(config.infer.length_penalty),
+        "ctc_weight": ctc_weight,
         "language_model_weight": language_model_weight,
         "language_model_path": str(language_model_path.resolve()) if language_model is not None else None,
     }

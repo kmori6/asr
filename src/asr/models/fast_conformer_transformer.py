@@ -157,7 +157,7 @@ class FastConformerTransformer(nn.Module):
         )
         logits = self.logits(decoder_outputs)
         batch_size = waveforms.shape[0]
-        ctc_log_probs = self.ctc_projection(encoder_outputs).float().log_softmax(dim=-1).transpose(0, 1)
+        ctc_log_probs = self.ctc_log_probs(encoder_outputs).transpose(0, 1)
         ctc_loss = self.ctc_loss_fn(ctc_log_probs, ctc_labels, encoder_lengths, ctc_label_lengths) / batch_size
         cross_entropy_loss = self.cross_entropy_loss_fn(logits.flatten(0, 1), labels.flatten()) / batch_size
         loss = self.ctc_loss_weight * ctc_loss + (1.0 - self.ctc_loss_weight) * cross_entropy_loss
@@ -191,6 +191,10 @@ class FastConformerTransformer(nn.Module):
     def logits(self, decoder_outputs: torch.Tensor) -> torch.Tensor:
         """Project decoder outputs to vocabulary logits."""
         return self.output_projection(decoder_outputs)
+
+    def ctc_log_probs(self, encoder_outputs: torch.Tensor) -> torch.Tensor:
+        """Return float32 CTC log probabilities shaped ``(batch, frames, vocab)``."""
+        return self.ctc_projection(encoder_outputs).float().log_softmax(dim=-1)
 
     @torch.inference_mode()
     def predict(

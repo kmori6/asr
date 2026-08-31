@@ -37,6 +37,7 @@ def recognize(
     beam_size: int,
     max_new_tokens: int,
     length_penalty: float,
+    ctc_weight: float,
     language_model_weight: float,
     device: torch.device,
     amp_dtype: torch.dtype,
@@ -52,6 +53,7 @@ def recognize(
             beam_size=beam_size,
             max_new_tokens=max_new_tokens,
             length_penalty=length_penalty,
+            ctc_weight=ctc_weight,
             language_model_weight=language_model_weight,
         )
 
@@ -96,6 +98,9 @@ def main(config: DictConfig) -> None:
     model = build_fast_conformer_transformer(config, blank_token_id=blank_token_id).to(device)
     model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
     model.eval()
+    ctc_weight = float(config.evaluate.ctc_weight)
+    if not 0.0 <= ctc_weight <= 1.0:
+        raise ValueError("evaluate.ctc_weight must be in [0, 1]")
     language_model_weight = float(config.evaluate.language_model_weight)
     if language_model_weight < 0.0:
         raise ValueError("evaluate.language_model_weight must be non-negative")
@@ -126,6 +131,7 @@ def main(config: DictConfig) -> None:
                 beam_size=int(config.evaluate.beam_size),
                 max_new_tokens=int(config.evaluate.max_new_tokens),
                 length_penalty=float(config.evaluate.length_penalty),
+                ctc_weight=ctc_weight,
                 language_model_weight=language_model_weight,
                 device=device,
                 amp_dtype=amp_dtype,
@@ -156,6 +162,7 @@ def main(config: DictConfig) -> None:
         "beam_size": int(config.evaluate.beam_size),
         "max_new_tokens": int(config.evaluate.max_new_tokens),
         "length_penalty": float(config.evaluate.length_penalty),
+        "ctc_weight": ctc_weight,
         "language_model_weight": language_model_weight,
         "language_model_path": str(language_model_path) if language_model is not None else None,
     }
