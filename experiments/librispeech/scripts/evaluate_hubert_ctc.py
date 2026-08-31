@@ -6,7 +6,7 @@ from typing import cast
 
 import hydra
 import torch
-from hubert_ctc_factory import load_hubert_ctc, recognize_hubert_ctc
+from hubert_ctc_factory import load_hubert_ctc, load_transformer_lm, recognize_hubert_ctc
 from omegaconf import DictConfig
 from torchaudio.functional import edit_distance
 from tqdm import tqdm
@@ -63,9 +63,23 @@ def main(config: DictConfig) -> None:
     amp_dtype = torch.bfloat16 if device.type != "cuda" or torch.cuda.is_bf16_supported() else torch.float16
 
     model, processor, tokenizer, blank_token_id = load_hubert_ctc(model_path, sample_rate, device)
+    if tokenizer.bos_token_id is None or tokenizer.eos_token_id is None:
+        raise ValueError("The saved tokenizer must define BOS and EOS tokens")
+    bos_token_id = cast(int, tokenizer.bos_token_id)
+    eos_token_id = cast(int, tokenizer.eos_token_id)
+    language_model_weight = float(config.evaluate.language_model_weight)
+    if language_model_weight < 0.0:
+        raise ValueError("evaluate.language_model_weight must be non-negative")
+    language_model_path = resolve_experiment_path(str(config.language_model.model_path))
+    language_model = (
+        load_transformer_lm(language_model_path, tokenizer, device) if language_model_weight > 0.0 else None
+    )
     searcher = CTCBeamSearch(
         beam_width=int(config.evaluate.beam_size),
         blank_token_id=blank_token_id,
+        language_model=language_model,
+        bos_token_id=bos_token_id,
+        eos_token_id=eos_token_id,
     )
 
     hypotheses: list[str] = []
@@ -87,6 +101,7 @@ def main(config: DictConfig) -> None:
                 searcher=searcher,
                 device=device,
                 amp_dtype=amp_dtype,
+                language_model_weight=language_model_weight,
             )
             hypothesis = cast(str, tokenizer.decode(result.token_ids, skip_special_tokens=True)).strip()
             references.append(sample.text)
@@ -118,6 +133,8 @@ def main(config: DictConfig) -> None:
         "real_time_factor": evaluation_seconds / total_audio_seconds,
         "device": str(device),
         "beam_size": int(config.evaluate.beam_size),
+        "language_model_weight": language_model_weight,
+        "language_model_path": str(language_model_path) if language_model is not None else None,
     }
     with (out_dir / "metrics.json").open("w", encoding="utf-8") as metrics_file:
         json.dump(metrics, metrics_file, ensure_ascii=False, indent=2)

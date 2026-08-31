@@ -6,7 +6,7 @@ from typing import cast
 
 import hydra
 import torch
-from hubert_ctc_factory import load_hubert_ctc, recognize_hubert_ctc
+from hubert_ctc_factory import load_hubert_ctc, load_transformer_lm, recognize_hubert_ctc
 from omegaconf import DictConfig
 
 from asr.data import load_audio
@@ -42,9 +42,23 @@ def main(config: DictConfig) -> None:
 
     sample_rate = int(config.dataset.sample_rate)
     model, processor, tokenizer, blank_token_id = load_hubert_ctc(model_path, sample_rate, device)
+    if tokenizer.bos_token_id is None or tokenizer.eos_token_id is None:
+        raise ValueError("The saved tokenizer must define BOS and EOS tokens")
+    bos_token_id = cast(int, tokenizer.bos_token_id)
+    eos_token_id = cast(int, tokenizer.eos_token_id)
+    language_model_weight = float(config.infer.language_model_weight)
+    if language_model_weight < 0.0:
+        raise ValueError("infer.language_model_weight must be non-negative")
+    language_model_path = resolve_experiment_path(str(config.language_model.model_path))
+    language_model = (
+        load_transformer_lm(language_model_path, tokenizer, device) if language_model_weight > 0.0 else None
+    )
     searcher = CTCBeamSearch(
         beam_width=int(config.infer.beam_size),
         blank_token_id=blank_token_id,
+        language_model=language_model,
+        bos_token_id=bos_token_id,
+        eos_token_id=eos_token_id,
     )
     waveform = load_audio(input_path, sample_rate=sample_rate)
 
@@ -57,6 +71,7 @@ def main(config: DictConfig) -> None:
         searcher=searcher,
         device=device,
         amp_dtype=amp_dtype,
+        language_model_weight=language_model_weight,
     )
     inference_seconds = time.perf_counter() - start_time
 
@@ -75,6 +90,8 @@ def main(config: DictConfig) -> None:
         "real_time_factor": inference_seconds / audio_duration_seconds,
         "device": str(device),
         "beam_size": int(config.infer.beam_size),
+        "language_model_weight": language_model_weight,
+        "language_model_path": str(language_model_path.resolve()) if language_model is not None else None,
     }
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", encoding="utf-8") as output_file:

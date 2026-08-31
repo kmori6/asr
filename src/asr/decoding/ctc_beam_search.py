@@ -1,8 +1,11 @@
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Protocol
 
 import torch
+
+from asr.models.transformer_lm import TransformerLMCache
 
 CTCTransitionScorer = Callable[[tuple[int, ...], int], float]
 _LOG_ZERO = -math.inf
@@ -10,7 +13,7 @@ _LOG_ZERO = -math.inf
 
 @dataclass(frozen=True, slots=True)
 class CTCBeamSearchResult:
-    """Best CTC prefix and its length-normalized log-probability."""
+    """Best CTC prefix and its length-normalized log-score."""
 
     token_ids: list[int]
     score: float
@@ -26,6 +29,22 @@ class _PrefixScores:
         return _log_add(self.blank, self.non_blank)
 
 
+class CTCLanguageModel(Protocol):
+    """Causal language-model operation required by CTC beam search."""
+
+    def predict(
+        self,
+        input_ids: torch.Tensor,
+        cache: TransformerLMCache | None = None,
+    ) -> tuple[torch.Tensor, TransformerLMCache]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _LanguageModelState:
+    cache: TransformerLMCache
+    next_token_log_probabilities: tuple[float, ...]
+
+
 def _log_add(first: float, second: float) -> float:
     """Add two log-domain probabilities without leaving Python scalars."""
     if first == _LOG_ZERO:
@@ -37,22 +56,9 @@ def _log_add(first: float, second: float) -> float:
 
 
 class CTCBeamSearch:
-    """Prefix beam search following Graves and Jaitly's Algorithm 1.
+    """Proposed in A. Graves and N. Jaitly, "Towards End-to-End Speech Recognition
+    with Recurrent Neural Networks," ICML 2014.
 
-    Blank-ending and non-blank-ending path probabilities are accumulated
-    separately so alignments that collapse to the same label prefix are merged.
-    Computation uses log probabilities for numerical stability while preserving
-    the probability-domain recurrences in the paper.
-
-    Paper: https://arxiv.org/pdf/1408.2873
-
-    Args:
-        beam_width: Number of prefixes retained before each input frame.
-        blank_token_id: Vocabulary index of the CTC blank symbol.
-        transition_scorer: Optional function returning ``log Pr(k | y)`` for
-            extending prefix ``y`` by token ``k``. When omitted, every
-            transition has probability one, as in CTC decoding without a
-            dictionary or language model.
     """
 
     def __init__(
@@ -60,35 +66,75 @@ class CTCBeamSearch:
         beam_width: int,
         blank_token_id: int,
         transition_scorer: CTCTransitionScorer | None = None,
+        language_model: CTCLanguageModel | None = None,
+        bos_token_id: int | None = None,
+        eos_token_id: int | None = None,
     ) -> None:
         if beam_width < 1:
             raise ValueError(f"beam_width must be >= 1, but got {beam_width}")
         if blank_token_id < 0:
             raise ValueError("blank_token_id must be non-negative")
+        if (bos_token_id is None) != (eos_token_id is None):
+            raise ValueError("bos_token_id and eos_token_id must either both be set or both be omitted")
+        if bos_token_id is not None:
+            assert eos_token_id is not None
+            if bos_token_id < 0 or eos_token_id < 0:
+                raise ValueError("bos_token_id and eos_token_id must be non-negative")
+            if len({blank_token_id, bos_token_id, eos_token_id}) != 3:
+                raise ValueError("blank_token_id, bos_token_id, and eos_token_id must be different")
+        if language_model is not None and bos_token_id is None:
+            raise ValueError("bos_token_id and eos_token_id must be set when language_model is provided")
 
         self.beam_width = beam_width
         self.blank_token_id = blank_token_id
         self.transition_scorer = transition_scorer
+        self.language_model = language_model
+        self.bos_token_id = bos_token_id
+        self.eos_token_id = eos_token_id
 
     @torch.inference_mode()
-    def search(self, logits: torch.Tensor) -> CTCBeamSearchResult:
+    def search(self, logits: torch.Tensor, language_model_weight: float = 0.0) -> CTCBeamSearchResult:
         """Decode frame logits for one utterance.
 
         Args:
             logits: Finite floating-point tensor with shape
                 ``(num_frames, vocab_size)``. The vocabulary must contain the
                 configured blank and at least one non-blank token.
+            language_model_weight: Weight applied to ``log Pr(k | y)`` from
+                the language model. Zero disables language-model scoring.
 
         Returns:
-            The prefix maximizing the paper's final length-normalized
-            probability. ``score`` is its equivalent normalized log-probability.
+            The prefix maximizing the paper's final length-normalized score.
+            ``score`` is its equivalent normalized log-score.
         """
         self._validate_logits(logits)
+        if language_model_weight < 0.0:
+            raise ValueError("language_model_weight must be non-negative")
+        if language_model_weight > 0.0 and self.language_model is None:
+            raise ValueError("language_model must be provided when language_model_weight is positive")
+
         frame_log_probabilities = torch.log_softmax(logits.float(), dim=-1).tolist()
         vocab_size = logits.shape[1]
-        label_token_ids = [token_id for token_id in range(vocab_size) if token_id != self.blank_token_id]
+        excluded_token_ids = {self.blank_token_id}
+        if self.bos_token_id is not None:
+            assert self.eos_token_id is not None
+            excluded_token_ids.update((self.bos_token_id, self.eos_token_id))
+        label_token_ids = [token_id for token_id in range(vocab_size) if token_id not in excluded_token_ids]
+        if not label_token_ids:
+            raise ValueError("the vocabulary must contain at least one non-special CTC label")
 
         beam: dict[tuple[int, ...], _PrefixScores] = {(): _PrefixScores(blank=0.0, non_blank=_LOG_ZERO)}
+        language_model_states: dict[tuple[int, ...], _LanguageModelState] = {}
+        if language_model_weight > 0.0:
+            assert self.bos_token_id is not None
+            language_model_states[()] = self._predict_language_model(
+                self.bos_token_id,
+                cache=None,
+                vocab_size=vocab_size,
+                excluded_token_ids=excluded_token_ids,
+                device=logits.device,
+            )
+
         for frame_log_probs in frame_log_probabilities:
             retained = dict(
                 sorted(
@@ -96,47 +142,58 @@ class CTCBeamSearch:
                     key=lambda item: (-item[1].total, item[0]),
                 )[: self.beam_width]
             )
-            candidates = set(retained)
-            candidates.update((*prefix, token_id) for prefix in retained for token_id in label_token_ids)
+            if language_model_states:
+                previous_language_model_states = language_model_states
+                language_model_states = {}
+                for prefix in retained:
+                    state = previous_language_model_states.get(prefix)
+                    if state is None:
+                        parent_state = previous_language_model_states.get(prefix[:-1])
+                        if parent_state is None:
+                            raise RuntimeError("retained CTC prefix has no language-model parent state")
+                        state = self._predict_language_model(
+                            prefix[-1],
+                            cache=parent_state.cache,
+                            vocab_size=vocab_size,
+                            excluded_token_ids=excluded_token_ids,
+                            device=logits.device,
+                        )
+                    language_model_states[prefix] = state
 
-            next_beam: dict[tuple[int, ...], _PrefixScores] = {}
-            for prefix in sorted(candidates):
-                previous_scores = retained.get(prefix)
-                blank_log_probability = (
-                    previous_scores.total + frame_log_probs[self.blank_token_id]
-                    if previous_scores is not None
-                    else _LOG_ZERO
-                )
+            next_blank: dict[tuple[int, ...], float] = {}
+            next_non_blank: dict[tuple[int, ...], float] = {}
+            for prefix, prefix_scores in retained.items():
+                next_blank[prefix] = prefix_scores.total + frame_log_probs[self.blank_token_id]
 
-                non_blank_log_probability = _LOG_ZERO
                 if prefix:
                     final_token_id = prefix[-1]
-                    if previous_scores is not None:
-                        repeated_log_probability = previous_scores.non_blank + frame_log_probs[final_token_id]
-                        non_blank_log_probability = _log_add(
-                            non_blank_log_probability,
-                            repeated_log_probability,
-                        )
+                    next_non_blank[prefix] = _log_add(
+                        next_non_blank.get(prefix, _LOG_ZERO),
+                        prefix_scores.non_blank + frame_log_probs[final_token_id],
+                    )
 
-                    parent = prefix[:-1]
-                    parent_scores = retained.get(parent)
-                    if parent_scores is not None:
-                        extension_log_probability = self._extension_log_probability(
-                            parent,
-                            final_token_id,
-                            parent_scores,
-                            frame_log_probs[final_token_id],
-                        )
-                        non_blank_log_probability = _log_add(
-                            non_blank_log_probability,
-                            extension_log_probability,
-                        )
+                for token_id in label_token_ids:
+                    extended_prefix = (*prefix, token_id)
+                    extension_log_probability = self._extension_log_probability(
+                        prefix,
+                        token_id,
+                        prefix_scores,
+                        frame_log_probs[token_id],
+                        language_model_states.get(prefix),
+                        language_model_weight,
+                    )
+                    next_non_blank[extended_prefix] = _log_add(
+                        next_non_blank.get(extended_prefix, _LOG_ZERO),
+                        extension_log_probability,
+                    )
 
-                next_beam[prefix] = _PrefixScores(
-                    blank=blank_log_probability,
-                    non_blank=non_blank_log_probability,
+            beam = {
+                prefix: _PrefixScores(
+                    blank=next_blank.get(prefix, _LOG_ZERO),
+                    non_blank=next_non_blank.get(prefix, _LOG_ZERO),
                 )
-            beam = next_beam
+                for prefix in next_blank.keys() | next_non_blank.keys()
+            }
 
         best_prefix, best_scores = min(
             beam.items(),
@@ -147,12 +204,38 @@ class CTCBeamSearch:
             score=self._normalized_score(best_prefix, best_scores),
         )
 
+    def _predict_language_model(
+        self,
+        token_id: int,
+        cache: TransformerLMCache | None,
+        vocab_size: int,
+        excluded_token_ids: set[int],
+        device: torch.device,
+    ) -> _LanguageModelState:
+        assert self.language_model is not None
+        input_ids = torch.tensor([[token_id]], dtype=torch.long, device=device)
+        logits, next_cache = self.language_model.predict(input_ids, cache)
+        if logits.shape != (1, 1, vocab_size):
+            raise ValueError(f"language-model logits must have shape (1, 1, {vocab_size})")
+        if logits.device != device:
+            raise ValueError("language-model and CTC logits must be on the same device")
+
+        next_token_logits = logits[0, 0].float().clone()
+        next_token_logits[list(excluded_token_ids)] = -torch.inf
+        next_token_log_probabilities = torch.log_softmax(next_token_logits, dim=-1)
+        return _LanguageModelState(
+            cache=next_cache,
+            next_token_log_probabilities=tuple(next_token_log_probabilities.tolist()),
+        )
+
     def _extension_log_probability(
         self,
         prefix: tuple[int, ...],
         token_id: int,
         prefix_scores: _PrefixScores,
         emission_log_probability: float,
+        language_model_state: _LanguageModelState | None,
+        language_model_weight: float,
     ) -> float:
         if prefix and prefix[-1] == token_id:
             source_log_probability = prefix_scores.blank
@@ -164,6 +247,10 @@ class CTCBeamSearch:
             transition_log_probability = float(self.transition_scorer(prefix, token_id))
             if math.isnan(transition_log_probability) or transition_log_probability > 0.0:
                 raise ValueError("transition_scorer must return a log probability in [-inf, 0]")
+        if language_model_state is not None:
+            transition_log_probability += (
+                language_model_weight * language_model_state.next_token_log_probabilities[token_id]
+            )
         return source_log_probability + emission_log_probability + transition_log_probability
 
     @staticmethod
@@ -177,6 +264,9 @@ class CTCBeamSearch:
             raise ValueError("vocab_size must be at least two (blank and one label)")
         if self.blank_token_id >= logits.shape[1]:
             raise ValueError(f"blank_token_id must be in [0, {logits.shape[1]}), but got {self.blank_token_id}")
+        for name, token_id in (("bos_token_id", self.bos_token_id), ("eos_token_id", self.eos_token_id)):
+            if token_id is not None and token_id >= logits.shape[1]:
+                raise ValueError(f"{name} must be in [0, {logits.shape[1]}), but got {token_id}")
         if not logits.is_floating_point():
             raise TypeError("logits must be a floating-point tensor")
         if not torch.isfinite(logits).all():

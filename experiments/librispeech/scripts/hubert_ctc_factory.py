@@ -2,6 +2,8 @@ from pathlib import Path
 from typing import cast
 
 import torch
+from omegaconf import DictConfig, OmegaConf
+from safetensors.torch import load_file
 from transformers import (
     HubertForCTC,
     PreTrainedTokenizerBase,
@@ -10,6 +12,7 @@ from transformers import (
 )
 
 from asr.decoding import CTCBeamSearch, CTCBeamSearchResult
+from asr.models import TransformerLM
 
 
 def configure_tokenizer(
@@ -67,6 +70,53 @@ def load_hubert_ctc(
     return model, processor, tokenizer, blank_token_id
 
 
+def load_transformer_lm(
+    model_dir: Path,
+    tokenizer: PreTrainedTokenizerBase,
+    device: torch.device,
+) -> TransformerLM:
+    """Load the Transformer LM and verify its tokenizer matches the CTC tokenizer."""
+    weights_path = model_dir / "model.safetensors"
+    config_path = model_dir / "config.yaml"
+    for required_path in (weights_path, config_path):
+        if not required_path.is_file():
+            raise FileNotFoundError(f"Required language-model file not found: {required_path}")
+
+    language_model_tokenizer = cast(
+        PreTrainedTokenizerFast,
+        PreTrainedTokenizerFast.from_pretrained(model_dir),
+    )
+    if language_model_tokenizer.get_vocab() != tokenizer.get_vocab():
+        raise ValueError("Language-model and CTC tokenizers must have the same vocabulary and token IDs")
+    language_model_special_ids = (
+        language_model_tokenizer.pad_token_id,
+        language_model_tokenizer.bos_token_id,
+        language_model_tokenizer.eos_token_id,
+    )
+    ctc_special_ids = (tokenizer.pad_token_id, tokenizer.bos_token_id, tokenizer.eos_token_id)
+    if language_model_special_ids != ctc_special_ids:
+        raise ValueError("Language-model and CTC tokenizers must use the same PAD, BOS, and EOS token IDs")
+
+    saved_config = cast(DictConfig, OmegaConf.load(config_path))
+    model_config = saved_config.model
+    if int(model_config.vocab_size) != len(tokenizer):
+        raise ValueError("Language-model vocabulary size must match the CTC tokenizer")
+    language_model = TransformerLM(
+        vocab_size=int(model_config.vocab_size),
+        hidden_size=int(model_config.hidden_size),
+        num_heads=int(model_config.num_heads),
+        num_layers=int(model_config.num_layers),
+        feed_forward_size=int(model_config.feed_forward_size),
+        dropout_rate=float(model_config.dropout_rate),
+        max_length=int(model_config.max_length),
+        bias=bool(model_config.bias),
+    )
+    language_model.load_state_dict(load_file(weights_path))
+    language_model.to(device)
+    language_model.eval()
+    return language_model
+
+
 @torch.inference_mode()
 def recognize_hubert_ctc(
     waveform: torch.Tensor,
@@ -76,6 +126,7 @@ def recognize_hubert_ctc(
     searcher: CTCBeamSearch,
     device: torch.device,
     amp_dtype: torch.dtype,
+    language_model_weight: float = 0.0,
 ) -> CTCBeamSearchResult:
     """Compute HuBERT frame logits for one waveform and run CTC beam search."""
     if waveform.ndim != 1 or waveform.numel() == 0:
@@ -91,4 +142,4 @@ def recognize_hubert_ctc(
     model_inputs = {name: cast(torch.Tensor, value).to(device) for name, value in encoded.items()}
     with torch.autocast(device.type, dtype=amp_dtype, enabled=device.type == "cuda"):
         logits = model(**model_inputs).logits[0]
-    return searcher.search(logits)
+    return searcher.search(logits, language_model_weight=language_model_weight)

@@ -12,6 +12,9 @@ tokenizer:
   expected_vocab_size: 128
   blank_token: "[BLANK]"
 
+language_model:
+  model_path: results/transformer_lm
+
 model:
   pretrained_model_name_or_path: facebook/hubert-base-ls960
   freeze_feature_encoder: true
@@ -48,6 +51,8 @@ evaluate:
   model_path: ${train.out_dir}
   out_dir: results/hubert_ctc_evaluation
   beam_size: 10
+  # Tune on validation data; set to 0 to disable LM fusion and skip loading the LM.
+  language_model_weight: 0.2
   # Set to a small positive value for a quick evaluation smoke test.
   max_samples: null
 
@@ -58,6 +63,7 @@ infer:
   input_path: null
   out_path: results/hubert_ctc_inference.json
   beam_size: 10
+  language_model_weight: 0.2
 
 hydra:
   run:

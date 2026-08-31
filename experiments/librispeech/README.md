@@ -122,7 +122,9 @@ The default configuration is `config/hubert_ctc.yaml`. Training writes the best 
 state, and metrics to `results/hubert_ctc/`. Set `train.checkpoint_path` to a checkpoint directory to resume.
 Evaluation writes predictions and corpus WER to `results/hubert_ctc_evaluation/`. Use
 `evaluate.test_file=test-other.json` to select the other test split or set `evaluate.max_samples` to a positive integer
-for a smoke test. Inference writes detailed results to `results/hubert_ctc_inference.json`.
+for a smoke test. The Graves-Jaitly CTC beam search uses the causal Transformer LM in `results/transformer_lm/` by
+default; set `evaluate.language_model_weight=0` or `infer.language_model_weight=0` to disable LM fusion. Inference
+writes detailed results to `results/hubert_ctc_inference.json`.
 
 ## Whisper encoder-decoder fine-tuning
 
