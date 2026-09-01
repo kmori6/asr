@@ -5,7 +5,12 @@ from typing import cast
 
 import hydra
 import torch
-from fast_conformer_rnnt_factory import build_streaming_fast_conformer_rnnt, load_model_weights, validate_tokenizer
+from fast_conformer_rnnt_factory import (
+    build_streaming_fast_conformer_rnnt,
+    load_model_weights,
+    load_transformer_lm,
+    validate_tokenizer,
+)
 from omegaconf import DictConfig
 from torchaudio.functional import edit_distance
 from tqdm import tqdm
@@ -67,16 +72,27 @@ def main(config: DictConfig) -> None:
         PreTrainedTokenizerFast,
         PreTrainedTokenizerFast.from_pretrained(tokenizer_dir),
     )
-    blank_token_id = validate_tokenizer(tokenizer, config.model.vocab_size)
+    blank_token_id, bos_token_id, eos_token_id = validate_tokenizer(tokenizer, int(config.model.vocab_size))
     model = build_streaming_fast_conformer_rnnt(config, blank_token_id).to(device)
     load_model_weights(model, model_path, device)
     model.eval()
 
+    language_model_weight = float(config.evaluate.language_model_weight)
+    if language_model_weight < 0.0:
+        raise ValueError("evaluate.language_model_weight must be non-negative")
+    language_model_path = resolve_experiment_path(str(config.language_model.model_path))
+    language_model = (
+        load_transformer_lm(language_model_path, tokenizer, device) if language_model_weight > 0.0 else None
+    )
+
     searcher = RNNTBeamSearch(
         prediction_network=model.prediction_network,
         joint_network=model.joint_network,
-        beam_width=config.evaluate.beam_size,
+        beam_width=int(config.evaluate.beam_size),
         blank_token_id=blank_token_id,
+        language_model=language_model,
+        bos_token_id=bos_token_id,
+        eos_token_id=eos_token_id,
     )
     audio_chunker = AudioChunker(
         chunk_duration_ms=config.evaluate.audio_chunk_duration_ms,
@@ -85,7 +101,8 @@ def main(config: DictConfig) -> None:
     streaming_recognizer = StreamingRNNTRecognizer(
         model=model,
         searcher=searcher,
-        chunk_size=config.evaluate.chunk_size,
+        chunk_size=int(config.evaluate.chunk_size),
+        language_model_weight=language_model_weight,
         amp_dtype=amp_dtype,
     )
 
@@ -122,6 +139,8 @@ def main(config: DictConfig) -> None:
         "beam_size": int(config.evaluate.beam_size),
         "encoder_chunk_size": int(config.evaluate.chunk_size),
         "audio_chunk_duration_ms": int(config.evaluate.audio_chunk_duration_ms),
+        "language_model_weight": language_model_weight,
+        "language_model_path": str(language_model_path) if language_model is not None else None,
     }
     with (out_dir / "metrics.json").open("w", encoding="utf-8") as metrics_file:
         json.dump(metrics, metrics_file, ensure_ascii=False, indent=2)

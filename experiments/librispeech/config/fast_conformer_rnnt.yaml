@@ -9,6 +9,9 @@ dataset:
 tokenizer:
   tokenizer_dir: results/tokenizer
 
+language_model:
+  model_path: results/transformer_lm
+
 frontend:
   # A 512-sample FFT and 160-sample hop correspond to 32 ms and 10 ms at 16 kHz.
   sample_rate: 16000
@@ -84,6 +87,8 @@ evaluate:
   model_path: ${train.out_dir}
   out_dir: results/fast_conformer_rnnt_evaluation
   beam_size: 5
+  # Set to 0 to disable shallow fusion and skip loading the language model.
+  language_model_weight: 0.2
   # Set to a small positive value for a quick evaluation smoke test.
   max_samples: null
 
@@ -95,6 +100,7 @@ infer:
   input_path: null
   out_path: results/fast_conformer_rnnt_inference.json
   beam_size: 5
+  language_model_weight: 0.2
 
 hydra:
   # Keep execution in the launch directory and suppress Hydra's timestamped

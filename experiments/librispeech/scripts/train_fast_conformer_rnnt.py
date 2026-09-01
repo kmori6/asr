@@ -63,7 +63,7 @@ def main(config: DictConfig) -> None:
     if not tokenizer_dir.is_dir():
         raise FileNotFoundError(f"Tokenizer directory not found: {tokenizer_dir}")
     tokenizer = cast(PreTrainedTokenizerFast, PreTrainedTokenizerFast.from_pretrained(tokenizer_dir))
-    blank_token_id = validate_tokenizer(tokenizer, int(config.model.vocab_size))
+    blank_token_id, _, _ = validate_tokenizer(tokenizer, int(config.model.vocab_size))
     collator = RNNTCollator(tokenizer, blank_token_id)
     model = build_fast_conformer_rnnt(config, blank_token_id)
 

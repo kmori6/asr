@@ -9,6 +9,9 @@ dataset:
 tokenizer:
   tokenizer_dir: results/tokenizer
 
+language_model:
+  model_path: results/transformer_lm
+
 frontend:
   # A 512-sample FFT and 160-sample hop correspond to 32 ms and 10 ms at 16 kHz.
   sample_rate: 16000
@@ -91,6 +94,8 @@ evaluate:
   model_path: ${train.out_dir}
   out_dir: results/streaming_fast_conformer_rnnt_evaluation
   beam_size: 5
+  # Set to 0 to disable shallow fusion and skip loading the language model.
+  language_model_weight: 0.2
   # Attention chunks contain 8 frames after 8x subsampling. A 640 ms audio
   # delivery interval supplies approximately one such chunk at a 10 ms hop.
   audio_chunk_duration_ms: 640
@@ -106,6 +111,7 @@ infer:
   input_path: null
   out_path: results/streaming_fast_conformer_rnnt_inference.json
   beam_size: 5
+  language_model_weight: 0.2
   audio_chunk_duration_ms: 640
   chunk_size: 8
 

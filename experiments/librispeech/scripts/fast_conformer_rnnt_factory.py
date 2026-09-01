@@ -1,11 +1,12 @@
 from pathlib import Path
+from typing import cast
 
 import torch
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from safetensors.torch import load_file
 from transformers import PreTrainedTokenizerFast
 
-from asr.models import FastConformerRNNT, StreamingFastConformerRNNT
+from asr.models import FastConformerRNNT, StreamingFastConformerRNNT, TransformerLM
 from asr.modules.conformer import FastConformer, StreamingFastConformer
 from asr.modules.frontend import LogMelSpectrogram, SpecAugment
 from asr.modules.rnnt import JointNetwork, PredictionNetwork
@@ -25,8 +26,8 @@ def load_model_weights(model: torch.nn.Module, model_path: Path, device: torch.d
     model.load_state_dict(state_dict)
 
 
-def validate_tokenizer(tokenizer: PreTrainedTokenizerFast, expected_vocab_size: int) -> int:
-    """Validate the tokenizer assumptions required by the RNN-T model."""
+def validate_tokenizer(tokenizer: PreTrainedTokenizerFast, expected_vocab_size: int) -> tuple[int, int, int]:
+    """Validate and return blank, BOS, and EOS token IDs."""
     actual_vocab_size = len(tokenizer)
     if actual_vocab_size != expected_vocab_size:
         raise ValueError(f"Tokenizer vocabulary size must be {expected_vocab_size}, but got {actual_vocab_size}.")
@@ -34,13 +35,63 @@ def validate_tokenizer(tokenizer: PreTrainedTokenizerFast, expected_vocab_size: 
     vocabulary = tokenizer.get_vocab()
     if BLANK_TOKEN not in vocabulary:
         raise ValueError(f"Tokenizer must define {BLANK_TOKEN}.")
-    if tokenizer.unk_token_id is None:
-        raise ValueError("Tokenizer must define unk_token.")
+    if tokenizer.bos_token_id is None or tokenizer.eos_token_id is None or tokenizer.unk_token_id is None:
+        raise ValueError("Tokenizer must define BOS, EOS, and UNK tokens.")
 
-    blank_token_id = vocabulary[BLANK_TOKEN]
-    if blank_token_id == tokenizer.unk_token_id:
-        raise ValueError("Blank and unknown tokens must have different IDs.")
-    return blank_token_id
+    tokenizer.pad_token = BLANK_TOKEN
+    blank_token_id = cast(int, tokenizer.pad_token_id)
+    bos_token_id = cast(int, tokenizer.bos_token_id)
+    eos_token_id = cast(int, tokenizer.eos_token_id)
+    if len({blank_token_id, bos_token_id, eos_token_id, cast(int, tokenizer.unk_token_id)}) != 4:
+        raise ValueError("Blank, BOS, EOS, and UNK token IDs must be distinct.")
+    return blank_token_id, bos_token_id, eos_token_id
+
+
+def load_transformer_lm(
+    model_dir: Path,
+    tokenizer: PreTrainedTokenizerFast,
+    device: torch.device,
+) -> TransformerLM:
+    """Load the Transformer LM and verify its tokenizer matches the RNN-T tokenizer."""
+    weights_path = model_dir / "model.safetensors"
+    config_path = model_dir / "config.yaml"
+    for required_path in (weights_path, config_path):
+        if not required_path.is_file():
+            raise FileNotFoundError(f"Required language-model file not found: {required_path}")
+
+    language_model_tokenizer = cast(
+        PreTrainedTokenizerFast,
+        PreTrainedTokenizerFast.from_pretrained(model_dir),
+    )
+    if language_model_tokenizer.get_vocab() != tokenizer.get_vocab():
+        raise ValueError("Language-model and RNN-T tokenizers must have the same vocabulary and token IDs")
+    language_model_special_ids = (
+        language_model_tokenizer.pad_token_id,
+        language_model_tokenizer.bos_token_id,
+        language_model_tokenizer.eos_token_id,
+    )
+    rnnt_special_ids = (tokenizer.pad_token_id, tokenizer.bos_token_id, tokenizer.eos_token_id)
+    if language_model_special_ids != rnnt_special_ids:
+        raise ValueError("Language-model and RNN-T tokenizers must use the same PAD, BOS, and EOS token IDs")
+
+    saved_config = cast(DictConfig, OmegaConf.load(config_path))
+    model_config = saved_config.model
+    if int(model_config.vocab_size) != len(tokenizer):
+        raise ValueError("Language-model vocabulary size must match the RNN-T tokenizer")
+    language_model = TransformerLM(
+        vocab_size=int(model_config.vocab_size),
+        hidden_size=int(model_config.hidden_size),
+        num_heads=int(model_config.num_heads),
+        num_layers=int(model_config.num_layers),
+        feed_forward_size=int(model_config.feed_forward_size),
+        dropout_rate=float(model_config.dropout_rate),
+        max_length=int(model_config.max_length),
+        bias=bool(model_config.bias),
+    )
+    language_model.load_state_dict(load_file(weights_path))
+    language_model.to(device)
+    language_model.eval()
+    return language_model
 
 
 def _build_frontend(config: DictConfig) -> LogMelSpectrogram:

@@ -18,10 +18,13 @@ class StreamingRNNTRecognizer:
         model: StreamingFastConformerRNNT,
         searcher: RNNTBeamSearch,
         chunk_size: int,
+        language_model_weight: float = 0.0,
         amp_dtype: torch.dtype | None = None,
     ) -> None:
         if chunk_size <= 0:
             raise ValueError("chunk_size must be positive")
+        if language_model_weight < 0.0:
+            raise ValueError("language_model_weight must be non-negative")
         if searcher.prediction_network is not model.prediction_network:
             raise ValueError("searcher and model must share the same prediction network")
         if searcher.joint_network is not model.joint_network:
@@ -30,6 +33,7 @@ class StreamingRNNTRecognizer:
         self.model = model
         self.searcher = searcher
         self.chunk_size = chunk_size
+        self.language_model_weight = language_model_weight
         self.amp_dtype = amp_dtype
 
     @torch.inference_mode()
@@ -64,7 +68,10 @@ class StreamingRNNTRecognizer:
                     chunk_size=self.chunk_size,
                     is_final=chunk.is_final,
                 )
-                result = self.searcher.search(encoder_outputs)
+                result = self.searcher.search(
+                    encoder_outputs,
+                    language_model_weight=self.language_model_weight,
+                )
 
         if result is None:
             raise RuntimeError("audio chunker did not yield any chunks")

@@ -82,6 +82,9 @@ The streaming workflow uses `config/streaming_fast_conformer_rnnt.yaml` and the 
 Its model, tokenizer, checkpoints, state, and metrics are written to `results/streaming_fast_conformer_rnnt/`.
 Evaluation writes references, hypotheses, predictions, and WER metrics to the model-specific evaluation directory.
 Inference prints the transcript and writes token IDs, the decoding score, timing, and mode-specific settings to JSON.
+Both RNN-T workflows use the causal Transformer LM in `results/transformer_lm/` for shallow fusion by default. Set
+`evaluate.language_model_weight=0` or `infer.language_model_weight=0` to decode without loading the LM. Streaming
+decoding retains the language-model cache across audio chunks.
 
 ## Streaming FastConformer CTC
 

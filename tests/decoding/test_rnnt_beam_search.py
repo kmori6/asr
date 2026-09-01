@@ -2,6 +2,7 @@ import torch
 from pytest import approx
 
 from asr.decoding import RNNTBeamSearch, RNNTBeamSearchResult
+from asr.models.transformer_lm import TransformerLMCache
 from asr.modules.rnnt import JointNetwork, PredictionNetwork
 from asr.modules.rnnt.prediction_network import PredictionState
 
@@ -61,6 +62,76 @@ class _RuleJointNetwork(JointNetwork):
         return logits
 
 
+class _FusionPredictionNetwork(PredictionNetwork):
+    def __init__(self) -> None:
+        super().__init__(
+            vocab_size=5,
+            hidden_size=1,
+            num_layers=1,
+            dropout_rate=0.0,
+            blank_token_id=0,
+        )
+
+    def forward(
+        self,
+        tokens: torch.Tensor,
+        state: PredictionState | None = None,
+    ) -> tuple[torch.Tensor, PredictionState]:
+        token_id = int(tokens.item())
+        output = tokens.to(dtype=torch.float32).unsqueeze(-1)
+        next_state = (
+            torch.full((1, 1, 1), token_id, dtype=torch.float32, device=tokens.device),
+            torch.full((1, 1, 1), token_id, dtype=torch.float32, device=tokens.device),
+        )
+        return output, next_state
+
+
+class _FusionJointNetwork(JointNetwork):
+    def __init__(self) -> None:
+        super().__init__(
+            vocab_size=5,
+            encoder_size=1,
+            predictor_size=1,
+            hidden_size=1,
+            dropout_rate=0.0,
+        )
+
+    def forward(
+        self,
+        encoder_outputs: torch.Tensor,
+        predictor_outputs: torch.Tensor,
+    ) -> torch.Tensor:
+        frame = int(encoder_outputs.item())
+        previous_token = int(predictor_outputs.item())
+        logits = torch.full((1, 1, 1, 5), -8.0, device=encoder_outputs.device)
+        if (frame, previous_token) == (0, 0):
+            logits[..., 1] = 4.0
+            logits[..., 2] = 3.8
+            logits[..., 0] = 0.0
+        elif (frame, previous_token) == (1, 2):
+            logits[..., 1] = 4.0
+            logits[..., 0] = 0.0
+        else:
+            logits[..., 0] = 4.0
+        return logits
+
+
+class _RuleLanguageModel:
+    def __init__(self) -> None:
+        self.consumed_tokens: list[int] = []
+
+    def predict(
+        self,
+        input_ids: torch.Tensor,
+        cache: TransformerLMCache | None = None,
+    ) -> tuple[torch.Tensor, TransformerLMCache]:
+        token_id = int(input_ids.item())
+        self.consumed_tokens.append(token_id)
+        logits = torch.full((1, 1, 5), -8.0, device=input_ids.device)
+        logits[..., 2 if token_id == 3 else 1] = 4.0
+        return logits, TransformerLMCache(layers=())
+
+
 def test_rnnt_beam_search_continues_across_chunks_without_reconsuming_blank() -> None:
     prediction_network = _RulePredictionNetwork()
     searcher = RNNTBeamSearch(
@@ -88,3 +159,46 @@ def test_rnnt_beam_search_continues_across_chunks_without_reconsuming_blank() ->
     assert chunked_result.token_ids == full_result.token_ids
     assert chunked_result.score == approx(full_result.score)
     assert prediction_network.consumed_tokens == [0, 1, 2]
+
+
+def test_rnnt_beam_search_applies_lm_only_to_labels_and_keeps_cache_across_chunks() -> None:
+    encoder_outputs = torch.tensor([[[0.0], [1.0]]])
+    without_lm = RNNTBeamSearch(
+        prediction_network=_FusionPredictionNetwork(),
+        joint_network=_FusionJointNetwork(),
+        beam_width=1,
+        blank_token_id=0,
+        bos_token_id=3,
+        eos_token_id=4,
+    )
+    assert without_lm.search(encoder_outputs).token_ids == [1]
+
+    language_model = _RuleLanguageModel()
+    chunked_searcher = RNNTBeamSearch(
+        prediction_network=_FusionPredictionNetwork(),
+        joint_network=_FusionJointNetwork(),
+        beam_width=1,
+        blank_token_id=0,
+        language_model=language_model,
+        bos_token_id=3,
+        eos_token_id=4,
+    )
+    first_result = chunked_searcher.search(encoder_outputs[:, :1], language_model_weight=1.0)
+    chunked_result = chunked_searcher.search(encoder_outputs[:, 1:], language_model_weight=1.0)
+
+    full_searcher = RNNTBeamSearch(
+        prediction_network=_FusionPredictionNetwork(),
+        joint_network=_FusionJointNetwork(),
+        beam_width=1,
+        blank_token_id=0,
+        language_model=_RuleLanguageModel(),
+        bos_token_id=3,
+        eos_token_id=4,
+    )
+    full_result = full_searcher.search(encoder_outputs, language_model_weight=1.0)
+
+    assert first_result.token_ids == [2]
+    assert chunked_result.token_ids == [2, 1]
+    assert chunked_result.token_ids == full_result.token_ids
+    assert chunked_result.score == approx(full_result.score)
+    assert language_model.consumed_tokens == [3, 2, 1]
