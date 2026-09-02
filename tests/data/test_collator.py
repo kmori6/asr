@@ -12,6 +12,7 @@ from asr.data import (
     HubertCTCCollator,
     RNNTCollator,
     SpeechTextSample,
+    WavlmQwen3Collator,
     WhisperCollator,
 )
 
@@ -19,7 +20,19 @@ from asr.data import (
 def create_tokenizer() -> PreTrainedTokenizerFast:
     backend_tokenizer = Tokenizer(
         WordLevel(
-            vocab={"[BLANK]": 0, "[UNK]": 1, "hello": 2, "world": 3, "[BOS]": 4, "[EOS]": 5},
+            vocab={
+                "[BLANK]": 0,
+                "[UNK]": 1,
+                "hello": 2,
+                "world": 3,
+                "[BOS]": 4,
+                "[EOS]": 5,
+                "<|im_start|>": 6,
+                "assistant": 7,
+                "language": 8,
+                "English": 9,
+                "<asr_text>": 10,
+            },
             unk_token="[UNK]",
         )
     )
@@ -33,7 +46,7 @@ def create_tokenizer() -> PreTrainedTokenizerFast:
         unk_token="[UNK]",
         bos_token="[BOS]",
         eos_token="[EOS]",
-        additional_special_tokens=["[BLANK]"],
+        additional_special_tokens=["[BLANK]", "<|im_start|>", "<asr_text>"],
     )
     return tokenizer
 
@@ -150,3 +163,36 @@ def test_encoder_decoder_collator_shifts_and_pads_targets() -> None:
     torch.testing.assert_close(batch["decoder_input_ids"], torch.tensor([[4, 2, 3], [4, 2, 0]]))
     torch.testing.assert_close(batch["decoder_attention_mask"], torch.tensor([[True, True, True], [True, True, False]]))
     torch.testing.assert_close(batch["labels"], torch.tensor([[2, 3, 5], [2, 5, -100]]))
+
+
+def test_wavlm_qwen3_collator_uses_qwen3_asr_sft_format() -> None:
+    tokenizer = create_tokenizer()
+    tokenizer.pad_token = "[BLANK]"
+    feature_extractor = Wav2Vec2FeatureExtractor(
+        sampling_rate=16_000,
+        do_normalize=False,
+        return_attention_mask=True,
+    )
+    collator = WavlmQwen3Collator(
+        feature_extractor=feature_extractor,
+        tokenizer=tokenizer,
+        sample_rate=16_000,
+        language="English",
+        max_text_length=32,
+    )
+
+    batch = collator(create_samples())
+
+    torch.testing.assert_close(batch["waveforms"], torch.tensor([[0.1, 0.2, 0.3], [0.4, 0.5, 0.0]]))
+    torch.testing.assert_close(batch["waveform_lengths"], torch.tensor([3, 2]))
+    assert batch["input_ids"].shape == batch["attention_mask"].shape == batch["labels"].shape
+    assert batch["attention_mask"].dtype == torch.bool
+    assert torch.all(batch["labels"][:, :2] == -100)
+    assert torch.all(batch["labels"][:, 2] != -100)
+    assert torch.all(batch["labels"][~batch["attention_mask"]] == -100)
+    torch.testing.assert_close(batch["input_ids"][0], torch.tensor([6, 7, 8, 9, 10, 2, 3, 5]))
+    torch.testing.assert_close(batch["labels"][0], torch.tensor([-100, -100, 8, 9, 10, 2, 3, 5]))
+    torch.testing.assert_close(
+        collator.create_generation_input_ids(batch_size=2),
+        torch.tensor([[6, 7], [6, 7]]),
+    )

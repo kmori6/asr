@@ -265,6 +265,170 @@ class EncoderDecoderCollator:
         }
 
 
+class WavlmQwen3Collator:
+    """Create waveform and causal text batches for WavLM-Qwen3 SFT.
+
+    Args:
+        feature_extractor (Wav2Vec2FeatureExtractor): WavLM waveform processor used for
+            normalization and zero padding.
+        tokenizer (PreTrainedTokenizerBase): Qwen3 tokenizer with pad and EOS tokens.
+        sample_rate (int): Required waveform sample rate in Hz.
+        language (str): Language name emitted in the Qwen3-ASR response prefix.
+        max_text_length (int): Maximum assistant header and response length including EOS.
+        ignore_index (int): Label value excluded from causal language-model loss.
+    """
+
+    def __init__(
+        self,
+        feature_extractor: Wav2Vec2FeatureExtractor,
+        tokenizer: PreTrainedTokenizerBase,
+        sample_rate: int,
+        language: str,
+        max_text_length: int,
+        ignore_index: int = -100,
+    ) -> None:
+        if sample_rate <= 0:
+            raise ValueError("sample_rate must be positive")
+        if feature_extractor.sampling_rate != sample_rate:
+            raise ValueError(
+                f"Feature extractor sample rate must be {sample_rate}, but got {feature_extractor.sampling_rate}."
+            )
+        if tokenizer.pad_token_id is None or tokenizer.eos_token_id is None:
+            raise ValueError("tokenizer must define pad and EOS tokens")
+        if not language:
+            raise ValueError("language must not be empty")
+        if max_text_length <= 1:
+            raise ValueError("max_text_length must be greater than one")
+
+        self.feature_extractor = feature_extractor
+        self.tokenizer = tokenizer
+        self.sample_rate = sample_rate
+        self.language = language
+        self.max_text_length = max_text_length
+        self.ignore_index = ignore_index
+        self.response_prefix = f"language {language}<asr_text>"
+        generation_encoding = tokenizer(
+            "<|im_start|>assistant\n",
+            add_special_tokens=False,
+            return_attention_mask=False,
+        )
+        self._generation_token_ids = tuple(cast(list[int], generation_encoding["input_ids"]))
+
+    def __call__(self, samples: list[SpeechTextSample]) -> dict[str, torch.Tensor]:
+        """Collate speech transcripts into right-padded SFT sequences.
+
+        Args:
+            samples (list[SpeechTextSample]): Non-empty speech and transcript samples.
+
+        Returns:
+            dict[str, torch.Tensor]: Batch containing ``waveforms`` with shape
+                ``(batch_size, num_samples)``, ``waveform_lengths`` with shape
+                ``(batch_size,)``, and ``input_ids``, ``attention_mask``, and ``labels``
+                with shape ``(batch_size, text_length)``. Assistant-header and padding
+                labels are ``ignore_index``.
+        """
+        if not samples:
+            raise ValueError("samples must not be empty")
+        for sample in samples:
+            if sample.sample_rate != self.sample_rate:
+                raise ValueError(
+                    f"Expected a {self.sample_rate} Hz sample rate, but got {sample.sample_rate} "
+                    f"for {sample.utterance_id}."
+                )
+
+        waveforms = [sample.waveform.detach().cpu().numpy() for sample in samples]
+        waveform_batch = self.feature_extractor(
+            waveforms,
+            sampling_rate=self.sample_rate,
+            padding=True,
+            return_attention_mask=False,
+            return_tensors="pt",
+        )
+        padded_waveforms = cast(torch.Tensor, waveform_batch["input_values"])
+        waveform_lengths = torch.tensor([sample.waveform.shape[0] for sample in samples], dtype=torch.long)
+
+        eos_token_id = cast(int, self.tokenizer.eos_token_id)
+        input_sequences = []
+        label_sequences = []
+        for sample in samples:
+            response_encoding = self.tokenizer(
+                self.response_prefix + sample.text,
+                add_special_tokens=False,
+                return_attention_mask=False,
+            )
+            response_token_ids = cast(list[int], response_encoding["input_ids"]) + [eos_token_id]
+            input_token_ids = [*self._generation_token_ids, *response_token_ids]
+            if len(input_token_ids) > self.max_text_length:
+                raise ValueError(
+                    f"Text must not exceed {self.max_text_length} tokens, but got {len(input_token_ids)} "
+                    f"for {sample.utterance_id}."
+                )
+            input_sequences.append(torch.tensor(input_token_ids, dtype=torch.long))
+            label_sequences.append(
+                torch.tensor(
+                    [self.ignore_index] * len(self._generation_token_ids) + response_token_ids,
+                    dtype=torch.long,
+                )
+            )
+
+        input_ids = pad_sequence(
+            input_sequences,
+            batch_first=True,
+            padding_value=cast(int, self.tokenizer.pad_token_id),
+        )
+        labels = pad_sequence(label_sequences, batch_first=True, padding_value=self.ignore_index)
+        text_lengths = torch.tensor([sequence.shape[0] for sequence in input_sequences], dtype=torch.long)
+        positions = torch.arange(input_ids.shape[1])
+        attention_mask = positions[None, :] < text_lengths[:, None]
+        return {
+            "waveforms": padded_waveforms,
+            "waveform_lengths": waveform_lengths,
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "labels": labels,
+        }
+
+    def create_generation_input_ids(self, batch_size: int = 1) -> torch.Tensor:
+        """Create unpadded Qwen assistant-header IDs.
+
+        Args:
+            batch_size (int): Number of identical assistant headers to create.
+
+        Returns:
+            torch.Tensor: Assistant-header IDs with shape ``(batch_size, text_length)``
+                and dtype ``torch.long``.
+        """
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        return torch.tensor(self._generation_token_ids, dtype=torch.long)[None, :].expand(batch_size, -1).clone()
+
+    def decode_response(self, token_ids: torch.Tensor | list[int]) -> tuple[str, str]:
+        """Decode generated IDs and remove the expected ASR response prefix.
+
+        Args:
+            token_ids (torch.Tensor | list[int]): One generated sequence with shape
+                ``(generated_length,)`` when supplied as a tensor.
+
+        Returns:
+            tuple[str, str]: Raw decoded response and the transcript after removing a leading
+                ``language <language><asr_text>`` prefix when present.
+        """
+        if isinstance(token_ids, torch.Tensor):
+            if token_ids.ndim != 1:
+                raise ValueError("token_ids must have shape (generated_length,)")
+            token_ids = token_ids.tolist()
+        raw_response = cast(
+            str,
+            self.tokenizer.decode(
+                token_ids,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=False,
+            ),
+        ).strip()
+        transcript = raw_response.removeprefix(self.response_prefix).strip()
+        return raw_response, transcript
+
+
 class WhisperCollator:
     """Create padded Whisper inputs and autoregressive decoder labels.
 

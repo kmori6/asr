@@ -11,6 +11,7 @@ dataset-specific workflows live under `experiments/`.
 - CTC (full-context and streaming)
 - RNN-T (full-context and streaming)
 - Encoder-decoder
+- Encoder-LLM
 - Decoding
   - CTC beam search
   - RNN-T beam search

@@ -10,6 +10,7 @@ from asr.models.fast_conformer_rnnt import (
 )
 from asr.models.fast_conformer_transformer import FastConformerTransformer
 from asr.models.transformer_lm import TransformerLM, TransformerLMCache
+from asr.models.wavlm_qwen3 import WavLMQwen3
 
 __all__ = [
     "FastConformerCTC",
@@ -21,4 +22,5 @@ __all__ = [
     "StreamingFastConformerRNNTCache",
     "TransformerLM",
     "TransformerLMCache",
+    "WavLMQwen3",
 ]

@@ -4,6 +4,7 @@ from asr.data.collator import (
     EncoderDecoderCollator,
     HubertCTCCollator,
     RNNTCollator,
+    WavlmQwen3Collator,
     WhisperCollator,
 )
 from asr.data.dataset import SpeechTextDataset, SpeechTextSample
@@ -15,6 +16,7 @@ __all__ = [
     "RNNTCollator",
     "SpeechTextDataset",
     "SpeechTextSample",
+    "WavlmQwen3Collator",
     "WhisperCollator",
     "load_audio",
 ]

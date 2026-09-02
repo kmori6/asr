@@ -163,3 +163,34 @@ checkpoints, Trainer state, and metrics to `results/whisper/`. Evaluation writes
 
 Inference audio is downmixed to mono and resampled to 16 kHz when necessary. Whisper inputs longer than its 30-second
 short-form limit are recorded as skipped without running generation and are excluded from evaluation WER.
+
+## WavLM-Qwen3 Encoder-LLM fine-tuning
+
+Fine-tune WavLM Base Plus and Qwen3-0.6B as an Encoder-LLM ASR model:
+
+```bash
+uv run scripts/train_wavlm_qwen3.py
+uv run scripts/evaluate_wavlm_qwen3.py
+uv run scripts/infer_wavlm_qwen3.py \
+  infer.input_path=/path/to/audio.wav
+```
+
+The default configuration is `config/wavlm_qwen3.yaml`. WavLM's convolutional feature encoder is frozen while its
+feature projection and Transformer layers are fine-tuned. The audio projector is trained fully, and Qwen3 uses LoRA
+adapters on its query and value projections. Set `model.llm.adaptation=frozen` for a frozen-LLM ablation.
+Training writes the best full state dictionary, tokenizer, feature extractor, Trainer state, metrics, and resolved
+configuration to `results/wavlm_qwen3/`. Evaluation writes predictions and normalized LibriSpeech WER to
+`results/wavlm_qwen3_evaluation/`.
+
+Inference is offline by default. Revision-based streaming repeatedly recognizes all audio received so far and records
+each revised hypothesis and currently stable token prefix:
+
+```bash
+uv run scripts/infer_wavlm_qwen3.py \
+  infer.input_path=/path/to/audio.wav \
+  infer.mode=streaming \
+  infer.chunk_duration_ms=2000
+```
+
+This streaming mode does not retain WavLM or Qwen3 caches; every update re-encodes the accumulated waveform and
+regenerates the transcript from the beginning.

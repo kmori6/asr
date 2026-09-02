@@ -1,0 +1,92 @@
+# Relative paths are resolved from experiments/librispeech by the experiment scripts.
+dataset:
+  data_dir: data
+  train_file: train.json
+  valid_file: valid.json
+  test_clean_file: test-clean.json
+  test_other_file: test-other.json
+  sample_rate: 16000
+
+model:
+  speech_encoder_name_or_path: microsoft/wavlm-base-plus
+  language_model_name_or_path: Qwen/Qwen3-0.6B
+  audio_downsample_factor: 4
+  freeze_feature_encoder: true
+  language: English
+  max_text_length: 256
+  llm:
+    # Supported values are lora and frozen.
+    adaptation: lora
+    lora:
+      rank: 8
+      alpha: 16
+      dropout: 0.05
+      target_modules:
+        - q_proj
+        - v_proj
+
+train:
+  seed: 42
+  out_dir: results/wavlm_qwen3
+  # A Transformers checkpoint directory resumes model, optimizer, scheduler,
+  # scaler, Trainer state, and the completed-step position. Null starts anew.
+  checkpoint_path: null
+  epochs: 4
+  train_batch_size: 8
+  valid_batch_size: 8
+  grad_accum_steps: 4
+  learning_rate: 3e-5
+  weight_decay: 1e-2
+  max_grad_norm: 1.0
+  lr_scheduler_type: linear
+  warmup_steps: 1000
+  logging_steps: 10
+  save_total_limit: 2
+  dataloader_num_workers: 2
+  dataloader_pin_memory: true
+  gradient_checkpointing: false
+  compile: true
+  # auto uses BF16 when supported, otherwise FP16 on CUDA and FP32 on CPU.
+  # Explicit alternatives are bf16, fp16, and fp32.
+  mixed_precision: auto
+
+evaluate:
+  test_file: ${dataset.test_clean_file}
+  model_path: ${train.out_dir}
+  out_dir: results/wavlm_qwen3_evaluation
+  num_beams: 4
+  max_new_tokens: 128
+  mixed_precision: auto
+  # Set to a small positive value for a quick evaluation smoke test.
+  max_samples: null
+
+infer:
+  model_path: ${train.out_dir}
+  input_path: null
+  out_path: results/wavlm_qwen3_inference.json
+  # offline recognizes once; streaming repeatedly recognizes accumulated chunks.
+  mode: offline
+  chunk_duration_ms: 2000
+  num_beams: 4
+  max_new_tokens: 128
+  mixed_precision: auto
+
+hydra:
+  run:
+    dir: .
+  job:
+    chdir: false
+  output_subdir: null
+  job_logging:
+    version: 1
+    formatters:
+      simple:
+        format: "%(asctime)s - %(name)s - %(filename)s:%(lineno)d - %(levelname)s: %(message)s"
+    handlers:
+      console:
+        class: logging.StreamHandler
+        formatter: simple
+        stream: ext://sys.stdout
+    root:
+      handlers: [console]
+    disable_existing_loggers: false
